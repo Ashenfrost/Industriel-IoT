@@ -73,3 +73,7 @@ dkms.conf
 
 # Editor
 .vscode/
+
+# wifi
+src/wifi_creds.h
+wifi_creds.h
