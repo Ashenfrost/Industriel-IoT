@@ -8,3 +8,9 @@
 &usb_serial {
     status = "okay";
 };
+
+&coretemp {
+    status = "okay";
+    range-min = <(-10)>;
+    range-max = <80>;
+};
