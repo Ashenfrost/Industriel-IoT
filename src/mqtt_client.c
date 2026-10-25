@@ -30,6 +30,15 @@ static int mqtt_get_socket(struct mqtt_client *c);
 static void mqtt_evt_handler(struct mqtt_client *const c, const struct mqtt_evt *evt);
 static void mqtt_thread_fn(void *p1, void *p2, void *p3);
 
+static struct mqtt_utf8 user = {
+    .utf8 = (uint8_t *)MQTT_ESP32_USER,
+    .size = sizeof(MQTT_ESP32_USER) - 1,
+};
+static struct mqtt_utf8 pass = {
+    .utf8 = (uint8_t *)MQTT_ESP32_PASS,
+    .size = sizeof(MQTT_ESP32_PASS) - 1,
+};
+
 int mqtt_client_initialize(void)
 {
 	k_thread_create(&mqtt_thread_data, mqtt_stack,
@@ -75,7 +84,7 @@ static int test_raw_tcp_socket(void)
     addr.sin_family = AF_INET;
     addr.sin_port = htons(1883);
 
-    ret = zsock_inet_pton(AF_INET, "193.181.218.152", &addr.sin_addr);
+    ret = zsock_inet_pton(AF_INET, MQTT_BROKER_HOSTNAME, &addr.sin_addr);
     if (ret <= 0) {
         printk("inet_pton failed: %d\n", ret);
         zsock_close(sock);
@@ -109,7 +118,8 @@ static int connect_mqtt(void)
     }
 
 	mqtt_client_init(&client);
-
+	client.user_name = &user;
+	client.password  = &pass;
 	client.broker = &broker;
 	client.evt_cb = mqtt_evt_handler;
 	client.client_id.utf8 = (uint8_t *)id;
@@ -132,14 +142,16 @@ static void mqtt_evt_handler(struct mqtt_client *const c, const struct mqtt_evt 
 
 	switch (evt->type) {
 	case MQTT_EVT_CONNACK:
-		LOG_INF("MQTT connected");
-		mqtt_client_publish_payload("hello world");
-		break;
+    if (evt->result != 0) {
+        LOG_ERR("CONNACK refused, code %d", evt->result);
+        break;
+    }
+    LOG_INF("MQTT connected");
+    mqtt_client_publish_payload("hello world");
+    break;
 	case MQTT_EVT_DISCONNECT:
-		LOG_INF("MQTT disconnected");
-		break;
-	default:
-		break;
+    LOG_INF("MQTT disconnected: %d", evt->result);
+    break;
 	}
 }
 
