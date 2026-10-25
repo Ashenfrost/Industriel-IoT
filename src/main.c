@@ -1,31 +1,29 @@
 #include <zephyr/kernel.h>
-#include <zephyr/device.h>
-#include <zephyr/drivers/sensor.h>
-#include "network.h"
+#include <zephyr/sys/printk.h>
+
+#include "client_id.h"
+#include "wifi_network.h"
+#include "mqtt_client.h"
+#include "ESP32_temperature.h"
 
 int main(void)
 {
-    const struct device *temperature_sensor = DEVICE_DT_GET(DT_ALIAS(die_temp0));
-    struct sensor_value temperature;
-
     printk("Zephyr app started\n");
-    network_init();
 
-    if (!device_is_ready(temperature_sensor)) {
-        printk("Internal temperature sensor is not ready\n");
-        return 0;
-    }
+    build_client_id_initialize();
+    printk("client id done\n");
+
+    network_initialize();
+    printk("network init done\n");
+
+    mqtt_client_initialize();
+    printk("mqtt init done\n");
+
+    //ESP32_temperature_initialize();
 
     while (1) {
-        if (sensor_sample_fetch(temperature_sensor) == 0 &&
-            sensor_channel_get(temperature_sensor, SENSOR_CHAN_DIE_TEMP,
-                               &temperature) == 0) {
-            printk("Internal temperature: %d.%06d C\n",
-                   temperature.val1, temperature.val2);
-        } else {
-            printk("Failed to read internal temperature\n");
-        }
-
-        k_sleep(K_SECONDS(15));
+        k_sleep(K_SECONDS(1));
     }
+
+    return 0;
 }

@@ -1,4 +1,4 @@
-#include "network.h"
+#include "wifi_network.h"
 #include "wifi_creds.h"
 
 #include <string.h>
@@ -44,7 +44,7 @@ static void ipv4_event_handler(struct net_mgmt_event_callback *cb,
 	}
 }
 
-int network_init(void)
+int network_initialize(void)
 {
 	struct net_if *iface = net_if_get_default();
 	struct wifi_connect_req_params params = { 0 };
@@ -81,7 +81,7 @@ int network_init(void)
 		return ret;
 	}
 
-	ret = k_sem_take(&wifi_connected_sem, K_SECONDS(10));
+	ret = k_sem_take(&wifi_connected_sem, K_SECONDS(30));
 	if (ret) {
 		LOG_ERR("Wi-Fi connect timeout");
 		return ret;
