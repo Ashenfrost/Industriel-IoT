@@ -1,33 +1,39 @@
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/sensor.h>
+#include <zephyr/logging/log.h>
 
-#include <zephyr/kernel.h>
-#include <zephyr/device.h>
-#include <zephyr/drivers/sensor.h>
-#include <zephyr/sys/printk.h>
 #include "ESP32_temperature.h"
 
-int ESP32_temperature_initialize(void){
-    const struct device *temperature_sensor =
-        DEVICE_DT_GET(DT_ALIAS(die_temp0));
-    struct sensor_value temperature;
+LOG_MODULE_REGISTER(temperature, LOG_LEVEL_INF);
 
-    if (!device_is_ready(temperature_sensor)) {
-        printk("Internal temperature sensor is not ready\n");
-        return 0;
-    }
+static const struct device *const temperature_sensor =
+	DEVICE_DT_GET(DT_ALIAS(die_temp0));
 
-    while (1) {
-        if (sensor_sample_fetch(temperature_sensor) == 0 &&
-            sensor_channel_get(temperature_sensor, SENSOR_CHAN_DIE_TEMP,
-                               &temperature) == 0) {
-            printk("Internal temperature: %d.%02d C\n",
-                temperature.val1, temperature.val2 / 10000);
-        } else {
-            printk("Failed to read internal temperature\n");
-        }
+int ESP32_temperature_initialize(void)
+{
+	if (!device_is_ready(temperature_sensor)) {
+		LOG_ERR("Internal temperature sensor is not ready");
+		return -ENODEV;
+	}
+	return 0;
+}
 
-        k_sleep(K_SECONDS(15));
-    }
+int ESP32_temperature_read(float *celsius)
+{
+	struct sensor_value temperature;
+	int ret;
+
+	ret = sensor_sample_fetch(temperature_sensor);
+	if (ret == 0) {
+		ret = sensor_channel_get(temperature_sensor, SENSOR_CHAN_DIE_TEMP,
+					 &temperature);
+	}
+	if (ret) {
+		LOG_ERR("Failed to read internal temperature: %d", ret);
+		return ret;
+	}
+
+	*celsius = (float)sensor_value_to_double(&temperature);
+	return 0;
 }

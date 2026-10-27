@@ -81,3 +81,7 @@ wifi_creds.h
 # mqtt
 src/mqtt_settings.h
 mqtt_settings.h
+
+# python (cloud tools)
+__pycache__/
+*_pb2.py

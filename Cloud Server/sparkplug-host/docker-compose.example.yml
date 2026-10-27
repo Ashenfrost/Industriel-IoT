@@ -1,0 +1,27 @@
+# Add the `sparkplug-host` service below to your existing docker-compose.yml
+# on the VPS (next to mosquitto and questdb). Paths assume the compose file
+# sits in the repo root of a clone of Industriel-IoT; adjust `context` if not.
+#
+#   docker compose up -d --build sparkplug-host
+#   docker compose logs -f sparkplug-host
+
+services:
+  sparkplug-host:
+    build:
+      context: .                                    # repo root (needs proto/)
+      dockerfile: "Cloud Server/sparkplug-host/Dockerfile"
+    restart: unless-stopped
+    depends_on:
+      - mosquitto
+      - questdb
+    env_file: .env                                  # secrets, never in git
+    environment:
+      MQTT_HOST: mosquitto        # service name on the compose network
+      MQTT_PORT: "1883"           # internal port, not exposed to the internet
+      SPARKPLUG_GROUP: "UCL"      # or "+" for all groups
+      LOG_LEVEL: INFO
+
+# .env (same folder as docker-compose.yml, listed in .gitignore):
+#   MQTT_USERNAME=sparkplug-host
+#   MQTT_PASSWORD=...
+#   QUESTDB_CONF=http::addr=questdb:9000;username=admin;password=...;

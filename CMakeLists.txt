@@ -9,5 +9,14 @@ target_sources(app PRIVATE
     src/main.c
     src/mqtt_client.c
     src/mqtt_payload.c
+    src/sparkplug.c
+    src/time_sync.c
     src/wifi_network.c
 )
+
+# Sparkplug B payload: generate C structs from the .proto with nanopb.
+# proto/sparkplug_b.options next to it limits array/string sizes.
+# The generated header is included as "proto/sparkplug_b.pb.h".
+list(APPEND CMAKE_MODULE_PATH ${ZEPHYR_BASE}/modules/nanopb)
+include(nanopb)
+zephyr_nanopb_sources(app proto/sparkplug_b.proto)
