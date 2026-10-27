@@ -77,3 +77,7 @@ dkms.conf
 # wifi
 src/wifi_creds.h
 wifi_creds.h
+
+# mqtt
+src/mqtt_settings.h
+mqtt_settings.h
