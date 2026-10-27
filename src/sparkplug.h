@@ -15,7 +15,7 @@
 
 #define SPARKPLUG_NAMESPACE   "spBv1.0"
 #define SPARKPLUG_TOPIC_LEN   96
-#define SPARKPLUG_PAYLOAD_LEN 1024
+#define SPARKPLUG_PAYLOAD_LEN 1280 /* fits APP_NDATA_MAX_SAMPLES = 60 */
 
 /* Metric names as sent in NBIRTH. */
 #define SP_METRIC_BDSEQ       "bdSeq"
@@ -36,7 +36,8 @@ enum sparkplug_msg_type {
 	SP_MSG_NCMD,
 };
 
-/* One sensor reading, stamped when it was taken (ms since Unix epoch, UTC). */
+/* One sensor reading. timestamp_ms is ms since Unix epoch (UTC) when it is
+ * encoded; while queued on the device it holds k_uptime_get() instead. */
 struct sparkplug_sample {
 	uint64_t timestamp_ms;
 	float temperature_c;
@@ -65,5 +66,7 @@ int sparkplug_encode_nbirth(uint8_t *buf, size_t len, uint64_t now_ms,
 int sparkplug_encode_ndata(uint8_t *buf, size_t len, uint64_t now_ms,
 			   const struct sparkplug_sample *samples, size_t count);
 
-/* True if an NCMD payload asks for a rebirth (by name or alias). */
+/* True if an NCMD payload asks for a rebirth (by name or alias).
+ * Not used with option A (the node doesn't subscribe to NCMD), kept for
+ * when the node stays connected or commands are added. */
 bool sparkplug_ncmd_is_rebirth(const uint8_t *buf, size_t len);

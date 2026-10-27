@@ -21,7 +21,8 @@ int main(void)
         LOG_ERR("network init failed");
     }
 
-    /* Real UTC timestamps for Sparkplug. Keep going without it. */
+    /* Real UTC timestamps for Sparkplug. If this fails, the MQTT thread
+     * retries before each session. */
     time_sync_initialize();
 
     mqtt_client_initialize();
@@ -37,7 +38,8 @@ int main(void)
     int64_t next = k_uptime_get();
 
     while (1) {
-        struct sparkplug_sample s = { .timestamp_ms = time_now_ms() };
+        /* Stamped with uptime; converted to UTC when it is sent */
+        struct sparkplug_sample s = { .timestamp_ms = (uint64_t)k_uptime_get() };
 
         if (ESP32_temperature_read(&s.temperature_c) == 0) {
             mqtt_client_queue_sample(&s);

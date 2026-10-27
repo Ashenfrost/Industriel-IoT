@@ -80,6 +80,6 @@ still has to pass the client's write ACL. That is why NDEATH is in the list.
 pip install paho-mqtt protobuf grpcio-tools
 python -m grpc_tools.protoc -I ../../proto --python_out=. ../../proto/sparkplug_b.proto
 python fake_edge_node.py --host <vps-ip> -u <user> -P <pw>
-python fake_edge_node.py ... --skip-seq 3    # host should request a rebirth
-python fake_edge_node.py ... --die-after 20  # host should log a DEATH
+python fake_edge_node.py ... --skip-seq 2    # host logs a seq gap
+python fake_edge_node.py ... --die 2         # session 2 dies, broker sends the Will
 ```

@@ -1,14 +1,25 @@
 /* mqtt_client.c - MQTT transport for the Sparkplug B edge node.
  *
- * Session life cycle (one loop iteration of mqtt_thread_fn):
- *   1. sparkplug_begin_session()   -> new bdSeq
- *   2. CONNECT with NDEATH as Will  (QoS 1, not retained, clean session)
- *   3. CONNACK -> subscribe NCMD, then publish NBIRTH (seq 0)
- *   4. publish queued samples as NDATA (seq 1, 2, ...)
- *   5. on any error: abort, wait (backoff), go to 1
+ * "Option A": the node is only connected while it has something to send.
+ * Every APP_PUBLISH_INTERVAL_S the MQTT thread runs one short session:
  *
- * All MQTT calls and all sparkplug_* calls happen in this one thread, so no
- * locking is needed. Other threads only touch the sample queue.
+ *   1. sparkplug_begin_session()        -> new bdSeq
+ *   2. CONNECT, NDEATH registered as Will (QoS 1, not retained, clean session)
+ *   3. CONNACK -> NBIRTH (seq 0)
+ *   4. all queued samples as NDATA, max APP_NDATA_MAX_SAMPLES per message
+ *   5. NDEATH (same bdSeq) published by us, then DISCONNECT
+ *
+ * Step 5 matters: a clean DISCONNECT tells the broker to throw the Will away,
+ * so without our own NDEATH the host would think the node is still online.
+ * If the node dies mid-session (power loss, network gone), the broker
+ * publishes the Will instead, so the host learns about it either way.
+ *
+ * The node does not subscribe to NCMD: it is offline most of the time, and
+ * every session starts with a full NBIRTH anyway, which is what a rebirth
+ * request would ask for.
+ *
+ * All MQTT and sparkplug_* calls happen in this one thread. Other threads only
+ * touch the sample queue.
  */
 #include "mqtt_client.h"
 #include "mqtt_settings.h"
@@ -25,22 +36,21 @@
 
 LOG_MODULE_REGISTER(mqtt_client, LOG_LEVEL_INF);
 
-#define RX_BUF_SIZE  512
-#define TX_BUF_SIZE  512
-#define STACK_SIZE   4096
-#define KEEPALIVE_S  60U
-#define BACKOFF_MIN_S 5
-#define BACKOFF_MAX_S 60
+#define RX_BUF_SIZE        256
+#define TX_BUF_SIZE        256
+#define STACK_SIZE         4096
+/* Sessions last seconds, but the keepalive also decides how fast the broker
+ * notices a dead node (1.5 x keepalive) and publishes the NDEATH Will. */
+#define KEEPALIVE_S        60U
 #define CONNACK_TIMEOUT_MS 10000
 
-BUILD_ASSERT(APP_SAMPLE_QUEUE_LEN >= APP_PUBLISH_BATCH_SIZE,
-	     "sample queue must hold at least one batch");
+BUILD_ASSERT(APP_SAMPLE_QUEUE_LEN >= APP_PUBLISH_INTERVAL_S / APP_SAMPLE_INTERVAL_S,
+	     "sample queue must hold at least one publish interval of samples");
 
 static struct mqtt_client client;
 static struct sockaddr_storage broker;
 static uint8_t rx_buffer[RX_BUF_SIZE];
 static uint8_t tx_buffer[TX_BUF_SIZE];
-static struct zsock_pollfd fds;
 
 static K_THREAD_STACK_DEFINE(mqtt_stack, STACK_SIZE);
 static struct k_thread mqtt_thread_data;
@@ -55,26 +65,23 @@ static atomic_t samples_dropped;
 static char topic_nbirth[SPARKPLUG_TOPIC_LEN];
 static char topic_ndeath[SPARKPLUG_TOPIC_LEN];
 static char topic_ndata[SPARKPLUG_TOPIC_LEN];
-static char topic_ncmd[SPARKPLUG_TOPIC_LEN];
 
-/* Payload buffers. The Will must stay valid for the whole session. */
-static uint8_t will_buf[64];
+/* The Will buffer must stay valid for the whole session. */
+static uint8_t ndeath_buf[32];
+static int ndeath_len;
 static uint8_t payload_buf[SPARKPLUG_PAYLOAD_LEN];
+static struct sparkplug_sample batch[APP_NDATA_MAX_SAMPLES];
 
 static struct mqtt_topic will_topic;
 static struct mqtt_utf8 will_msg;
 
-/* Set from the event handler, acted on in the thread loop */
-static atomic_t connected;
-static bool birth_pending;
+/* Set from the event handler (called from mqtt_input in this thread) */
+static bool connected;
+static int connack_result;
 
-/* Last sample sent, so a rebirth can report the current value */
+/* Last sample sent, so NBIRTH can report a current value */
 static struct sparkplug_sample last_sample;
 static bool have_last_sample;
-
-static int connect_mqtt(void);
-static void mqtt_evt_handler(struct mqtt_client *const c, const struct mqtt_evt *evt);
-static void mqtt_thread_fn(void *p1, void *p2, void *p3);
 
 static struct mqtt_utf8 user = {
     .utf8 = (uint8_t *)MQTT_ESP32_USER,
@@ -84,6 +91,8 @@ static struct mqtt_utf8 pass = {
     .utf8 = (uint8_t *)MQTT_ESP32_PASS,
     .size = sizeof(MQTT_ESP32_PASS) - 1,
 };
+
+static void mqtt_thread_fn(void *p1, void *p2, void *p3);
 
 int mqtt_client_initialize(void)
 {
@@ -95,11 +104,6 @@ int mqtt_client_initialize(void)
 
 	k_thread_name_set(&mqtt_thread_data, "mqtt_client");
 	return 0;
-}
-
-bool mqtt_client_is_connected(void)
-{
-	return atomic_get(&connected) != 0;
 }
 
 int mqtt_client_queue_sample(const struct sparkplug_sample *sample)
@@ -116,7 +120,7 @@ int mqtt_client_queue_sample(const struct sparkplug_sample *sample)
 	return 0;
 }
 
-/* Sparkplug: everything except the NDEATH Will is QoS 0, not retained */
+/* Sparkplug: NBIRTH/NDATA/NDEATH are QoS 0 and never retained */
 static int publish(const char *topic, const uint8_t *data, size_t len)
 {
 	struct mqtt_publish_param param = {0};
@@ -147,20 +151,25 @@ static int publish_nbirth(void)
 	return ret;
 }
 
-/* Sends one NDATA with up to APP_PUBLISH_BATCH_SIZE queued samples.
+/* Sends one NDATA with up to APP_NDATA_MAX_SAMPLES queued samples.
+ * Returns the number of samples sent (0 = queue empty) or a negative errno.
  * Samples are only removed from the queue once mqtt_publish() succeeded. */
-static int publish_ndata_batch(void)
+static int publish_ndata_chunk(void)
 {
-	struct sparkplug_sample batch[APP_PUBLISH_BATCH_SIZE];
 	size_t n = 0;
 	atomic_val_t dropped_before = atomic_get(&samples_dropped);
 
-	while (n < APP_PUBLISH_BATCH_SIZE &&
+	while (n < APP_NDATA_MAX_SAMPLES &&
 	       k_msgq_peek_at(&sample_q, &batch[n], n) == 0) {
 		n++;
 	}
 	if (n == 0) {
 		return 0;
+	}
+
+	/* Queued samples carry uptime; convert to UTC with the latest sync */
+	for (size_t i = 0; i < n; i++) {
+		batch[i].timestamp_ms = time_uptime_to_epoch_ms((int64_t)batch[i].timestamp_ms);
 	}
 
 	int len = sparkplug_encode_ndata(payload_buf, sizeof(payload_buf),
@@ -184,60 +193,37 @@ static int publish_ndata_batch(void)
 	last_sample = batch[n - 1];
 	have_last_sample = true;
 	LOG_INF("NDATA sent: %u sample(s), %d bytes", (unsigned int)n, len);
-	return 0;
+	return (int)n;
 }
 
-static int subscribe_ncmd(void)
+static void mqtt_evt_handler(struct mqtt_client *const c, const struct mqtt_evt *evt)
 {
-	struct mqtt_topic t = {
-		.topic = {
-			.utf8 = (const uint8_t *)topic_ncmd,
-			.size = strlen(topic_ncmd),
-		},
-		.qos = MQTT_QOS_0_AT_MOST_ONCE,
-	};
-	const struct mqtt_subscription_list list = {
-		.list = &t,
-		.list_count = 1,
-		.message_id = 1,
-	};
+	ARG_UNUSED(c);
 
-	return mqtt_subscribe(&client, &list);
-}
-
-/* Reads an incoming PUBLISH (only NCMD is subscribed) and checks for rebirth. */
-static void handle_incoming_publish(struct mqtt_client *c, const struct mqtt_evt *evt)
-{
-	size_t len = evt->param.publish.message.payload.len;
-
-	if (len > sizeof(payload_buf)) {
-		/* Too big for us: read it away in chunks so the stream stays in sync */
-		LOG_WRN("NCMD too large (%u bytes), ignored", (unsigned int)len);
-		while (len > 0) {
-			size_t chunk = MIN(len, sizeof(payload_buf));
-
-			if (mqtt_readall_publish_payload(c, payload_buf, chunk) < 0) {
-				return;
-			}
-			len -= chunk;
+	switch (evt->type) {
+	case MQTT_EVT_CONNACK:
+		connack_result = evt->result;
+		if (evt->result != 0) {
+			LOG_ERR("CONNACK refused, code %d", evt->result);
+			break;
 		}
-		return;
-	}
+		LOG_INF("MQTT connected");
+		connected = true;
+		break;
 
-	if (mqtt_readall_publish_payload(c, payload_buf, len) < 0) {
-		LOG_ERR("Failed to read NCMD payload");
-		return;
-	}
+	case MQTT_EVT_DISCONNECT:
+		LOG_INF("MQTT disconnected: %d", evt->result);
+		connected = false;
+		break;
 
-	if (sparkplug_ncmd_is_rebirth(payload_buf, len)) {
-		LOG_INF("Rebirth requested by host");
-		birth_pending = true;
+	default:
+		break;
 	}
 }
 
 #ifdef MQTT_DEBUG_RAW_TCP_TEST
 /* Plain TCP connect test. Off by default: it opens an extra connection on
- * every reconnect, which costs data on cellular. Define it in
+ * every session, which costs data on cellular. Define it in
  * mqtt_settings.h to turn it back on while debugging. */
 static int test_raw_tcp_socket(void)
 {
@@ -271,7 +257,6 @@ static int test_raw_tcp_socket(void)
 
 static int connect_mqtt(void)
 {
-	int ret;
 	struct sockaddr_in *broker4 = (struct sockaddr_in *)&broker;
 	const char *id = build_client_id_get();
 
@@ -284,23 +269,25 @@ static int connect_mqtt(void)
 	}
 
 #ifdef MQTT_DEBUG_RAW_TCP_TEST
-	ret = test_raw_tcp_socket();
+	int ret = test_raw_tcp_socket();
+
 	if (ret < 0) {
 		return ret;
 	}
 #endif
 
-	/* New session: new bdSeq, and a Will (NDEATH) carrying that bdSeq */
+	/* New session: new bdSeq. The same NDEATH bytes are used as the Will
+	 * and as our own NDEATH at the end of the session. */
 	sparkplug_begin_session();
-	ret = sparkplug_encode_ndeath(will_buf, sizeof(will_buf));
-	if (ret < 0) {
-		return ret;
+	ndeath_len = sparkplug_encode_ndeath(ndeath_buf, sizeof(ndeath_buf));
+	if (ndeath_len < 0) {
+		return ndeath_len;
 	}
 	will_topic.topic.utf8 = (const uint8_t *)topic_ndeath;
 	will_topic.topic.size = strlen(topic_ndeath);
 	will_topic.qos = MQTT_QOS_1_AT_LEAST_ONCE; /* Sparkplug requires QoS 1 */
-	will_msg.utf8 = will_buf;
-	will_msg.size = ret;
+	will_msg.utf8 = ndeath_buf;
+	will_msg.size = ndeath_len;
 
 	mqtt_client_init(&client);
 	client.user_name = &user;
@@ -321,106 +308,89 @@ static int connect_mqtt(void)
 	client.will_retain = 0;            /* Sparkplug: NDEATH is never retained */
 	client.transport.type = MQTT_TRANSPORT_NON_SECURE; /* TODO: TLS */
 
+	connected = false;
+	connack_result = 0;
 	return mqtt_connect(&client);
 }
 
-static void mqtt_evt_handler(struct mqtt_client *const c, const struct mqtt_evt *evt)
+/* Processes incoming packets until CONNACK arrives (or timeout/refusal). */
+static int wait_for_connack(void)
 {
-	switch (evt->type) {
-	case MQTT_EVT_CONNACK:
-		if (evt->result != 0) {
-			LOG_ERR("CONNACK refused, code %d", evt->result);
-			break;
-		}
-		LOG_INF("MQTT connected");
-		atomic_set(&connected, 1);
-		/* Don't publish from inside the callback: let the loop do it */
-		birth_pending = true;
-		break;
+	struct zsock_pollfd fds = {
+		.fd = client.transport.tcp.sock,
+		.events = ZSOCK_POLLIN,
+	};
+	int64_t deadline = k_uptime_get() + CONNACK_TIMEOUT_MS;
 
-	case MQTT_EVT_SUBACK:
-		LOG_INF("Subscribed to %s", topic_ncmd);
-		break;
+	while (!connected) {
+		int remaining = (int)(deadline - k_uptime_get());
 
-	case MQTT_EVT_PUBLISH:
-		handle_incoming_publish(c, evt);
-		break;
-
-	case MQTT_EVT_DISCONNECT:
-		LOG_INF("MQTT disconnected: %d", evt->result);
-		atomic_set(&connected, 0);
-		break;
-
-	default:
-		break;
-	}
-}
-
-/* Runs one connected session until something fails. Returns the error. */
-static int run_session(void)
-{
-	int rc;
-
-	int64_t connect_started = k_uptime_get();
-
-	fds.fd = client.transport.tcp.sock;
-	fds.events = ZSOCK_POLLIN;
-
-	while (1) {
-		if (!mqtt_client_is_connected() &&
-		    k_uptime_get() - connect_started > CONNACK_TIMEOUT_MS) {
+		if (remaining <= 0) {
 			LOG_ERR("No CONNACK from broker");
 			return -ETIMEDOUT;
 		}
 
-		if (mqtt_client_is_connected()) {
-			if (birth_pending) {
-				/* NCMD first, so a rebirth request can't be missed */
-				rc = subscribe_ncmd();
-				if (rc == 0) {
-					rc = publish_nbirth();
-				}
-				if (rc) {
-					LOG_ERR("NBIRTH failed: %d", rc);
-					return rc;
-				}
-				birth_pending = false;
-			}
+		int rc = zsock_poll(&fds, 1, remaining);
 
-			if (k_msgq_num_used_get(&sample_q) >= APP_PUBLISH_BATCH_SIZE) {
-				rc = publish_ndata_batch();
-				if (rc) {
-					LOG_ERR("NDATA failed: %d", rc);
-					return rc;
-				}
-			}
-		}
-
-		rc = zsock_poll(&fds, 1, 1000);
 		if (rc < 0) {
-			LOG_ERR("poll failed: %d", errno);
 			return -errno;
 		}
-
 		if (fds.revents & (ZSOCK_POLLERR | ZSOCK_POLLHUP | ZSOCK_POLLNVAL)) {
-			LOG_ERR("socket error: revents=0x%x", fds.revents);
 			return -ECONNRESET;
 		}
-
 		if (fds.revents & ZSOCK_POLLIN) {
 			rc = mqtt_input(&client);
 			if (rc < 0) {
-				LOG_ERR("mqtt_input failed: %d", rc);
 				return rc;
 			}
-		}
-
-		rc = mqtt_live(&client);
-		if (rc < 0 && rc != -EAGAIN) {
-			LOG_ERR("mqtt_live failed: %d", rc);
-			return rc;
+			if (connack_result != 0) {
+				return -ECONNREFUSED;
+			}
 		}
 	}
+	return 0;
+}
+
+/* One complete option A session. On any error the connection is aborted;
+ * the broker then publishes the Will, and unsent samples stay queued. */
+static int run_session(void)
+{
+	int rc = connect_mqtt();
+
+	if (rc) {
+		LOG_ERR("mqtt_connect failed: %d", rc);
+		return rc;
+	}
+
+	rc = wait_for_connack();
+	if (rc == 0) {
+		rc = publish_nbirth();
+	}
+
+	while (rc == 0) {
+		int sent = publish_ndata_chunk();
+
+		if (sent <= 0) {
+			rc = sent;
+			break;
+		}
+	}
+
+	if (rc == 0) {
+		/* Leave cleanly: NDEATH ourselves, then DISCONNECT (drops the Will) */
+		rc = publish(topic_ndeath, ndeath_buf, ndeath_len);
+		if (rc == 0) {
+			rc = mqtt_disconnect(&client, NULL);
+		}
+		if (rc == 0) {
+			LOG_INF("Session done, disconnected");
+			return 0;
+		}
+	}
+
+	LOG_ERR("Session failed: %d", rc);
+	mqtt_abort(&client);
+	return rc;
 }
 
 static void mqtt_thread_fn(void *p1, void *p2, void *p3)
@@ -430,35 +400,30 @@ static void mqtt_thread_fn(void *p1, void *p2, void *p3)
 	ARG_UNUSED(p3);
 
 	const char *node_id = build_client_id_get();
-	int backoff_s = BACKOFF_MIN_S;
 
 	sparkplug_build_topic(SP_MSG_NBIRTH, node_id, topic_nbirth, sizeof(topic_nbirth));
 	sparkplug_build_topic(SP_MSG_NDEATH, node_id, topic_ndeath, sizeof(topic_ndeath));
 	sparkplug_build_topic(SP_MSG_NDATA,  node_id, topic_ndata,  sizeof(topic_ndata));
-	sparkplug_build_topic(SP_MSG_NCMD,   node_id, topic_ncmd,   sizeof(topic_ncmd));
 	LOG_INF("Sparkplug node topics: %s", topic_ndata);
 
-	/* Reconnect forever: Project B-style robustness also helps Project A */
+	/* First session right away, so a fresh boot shows up on the host */
+	int64_t next = k_uptime_get();
+
 	while (1) {
-		atomic_set(&connected, 0);
-		birth_pending = false;
+		k_sleep(K_TIMEOUT_ABS_MS(next));
 
-		int rc = connect_mqtt();
-
-		if (rc == 0) {
-			rc = run_session();
-			if (mqtt_client_is_connected()) {
-				/* we got as far as CONNACK, so start over with short wait */
-				backoff_s = BACKOFF_MIN_S;
-			}
-			mqtt_abort(&client);
-		} else {
-			LOG_ERR("mqtt_connect failed: %d", rc);
+		time_sync_refresh_if_stale();
+		if (!time_sync_is_valid()) {
+			LOG_WRN("No valid time: timestamps will be uptime-based");
 		}
 
-		atomic_set(&connected, 0);
-		LOG_INF("Reconnecting in %d s", backoff_s);
-		k_sleep(K_SECONDS(backoff_s));
-		backoff_s = MIN(backoff_s * 2, BACKOFF_MAX_S);
+		if (run_session() == 0) {
+			next += (int64_t)APP_PUBLISH_INTERVAL_S * MSEC_PER_SEC;
+		} else {
+			/* Samples are still queued; try again sooner than a full
+			 * interval, but don't burn power on a dead network. */
+			next = k_uptime_get() + (int64_t)APP_RETRY_INTERVAL_S * MSEC_PER_SEC;
+			LOG_INF("Retrying in %d s", APP_RETRY_INTERVAL_S);
+		}
 	}
 }

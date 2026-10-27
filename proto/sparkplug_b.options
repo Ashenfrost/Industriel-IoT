@@ -1,10 +1,10 @@
 # nanopb options for the Sparkplug B payload (Eclipse Tahu sparkplug_b.proto).
 # Everything we never send or parse is ignored, so the structs stay small and static.
-org.eclipse.tahu.protobuf.Payload.metrics                 max_count:20
+org.eclipse.tahu.protobuf.Payload.metrics                 max_count:60
 org.eclipse.tahu.protobuf.Payload.uuid                    type:FT_IGNORE
 org.eclipse.tahu.protobuf.Payload.body                    type:FT_IGNORE
-org.eclipse.tahu.protobuf.Payload.Metric.name             max_size:40
-org.eclipse.tahu.protobuf.Payload.Metric.string_value     max_size:32
+org.eclipse.tahu.protobuf.Payload.Metric.name             max_size:24
+org.eclipse.tahu.protobuf.Payload.Metric.string_value     type:FT_IGNORE
 org.eclipse.tahu.protobuf.Payload.Metric.bytes_value      type:FT_IGNORE
 org.eclipse.tahu.protobuf.Payload.Metric.metadata         type:FT_IGNORE
 org.eclipse.tahu.protobuf.Payload.Metric.properties       type:FT_IGNORE

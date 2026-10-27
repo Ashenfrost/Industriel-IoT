@@ -11,10 +11,13 @@ LOG_MODULE_REGISTER(time_sync, LOG_LEVEL_INF);
 #define SNTP_TIMEOUT_MS 3000
 #define SNTP_RETRIES    3
 
-/* epoch_ms = k_uptime_get() + offset_ms. Written once, read by all threads;
- * a 64-bit store is not atomic on a 32-bit CPU, hence the atomic flag. */
+/* epoch_ms = k_uptime_get() + offset_ms. Written on every (re)sync by the
+ * MQTT thread, read by the sampling thread. A 64-bit value is not written
+ * atomically on a 32-bit CPU, so reads and writes take the spinlock. */
+static struct k_spinlock lock;
 static int64_t offset_ms;
 static atomic_t valid;
+static int64_t last_sync_uptime_ms;
 
 int time_sync_initialize(void)
 {
@@ -38,10 +41,27 @@ int time_sync_initialize(void)
 	int64_t epoch_ms = (int64_t)ts.seconds * 1000 +
 			   (int64_t)(((uint64_t)ts.fraction * 1000U) >> 32);
 
-	offset_ms = epoch_ms - k_uptime_get();
+	K_SPINLOCK(&lock) {
+		last_sync_uptime_ms = k_uptime_get();
+		offset_ms = epoch_ms - last_sync_uptime_ms;
+	}
 	atomic_set(&valid, 1);
 	LOG_INF("Time synced: %lld s since epoch", (long long)ts.seconds);
 	return 0;
+}
+
+void time_sync_refresh_if_stale(void)
+{
+	int64_t since_sync;
+
+	K_SPINLOCK(&lock) {
+		since_sync = k_uptime_get() - last_sync_uptime_ms;
+	}
+	if (time_sync_is_valid() &&
+	    since_sync < (int64_t)APP_SNTP_RESYNC_S * MSEC_PER_SEC) {
+		return;
+	}
+	(void)time_sync_initialize();
 }
 
 bool time_sync_is_valid(void)
@@ -49,9 +69,19 @@ bool time_sync_is_valid(void)
 	return atomic_get(&valid) != 0;
 }
 
+uint64_t time_uptime_to_epoch_ms(int64_t uptime_ms)
+{
+	int64_t epoch_ms = uptime_ms;
+
+	K_SPINLOCK(&lock) {
+		if (time_sync_is_valid()) {
+			epoch_ms += offset_ms;
+		}
+	}
+	return (uint64_t)epoch_ms;
+}
+
 uint64_t time_now_ms(void)
 {
-	int64_t now = k_uptime_get();
-
-	return (uint64_t)(time_sync_is_valid() ? now + offset_ms : now);
+	return time_uptime_to_epoch_ms(k_uptime_get());
 }
