@@ -1,31 +1,54 @@
 #include <zephyr/kernel.h>
-#include <zephyr/device.h>
-#include <zephyr/drivers/sensor.h>
-#include "network.h"
+#include <zephyr/logging/log.h>
+
+#include "app_config.h"
+#include "client_id.h"
+#include "wifi_network.h"
+#include "mqtt_client.h"
+#include "time_sync.h"
+#include "ESP32_temperature.h"
+
+LOG_MODULE_REGISTER(app, LOG_LEVEL_INF);
 
 int main(void)
 {
-    const struct device *temperature_sensor = DEVICE_DT_GET(DT_ALIAS(die_temp0));
-    struct sensor_value temperature;
+    LOG_INF("Zephyr app started");
 
-    printk("Zephyr app started\n");
-    network_init();
+    build_client_id_initialize();
+    LOG_INF("client id: %s", build_client_id_get());
 
-    if (!device_is_ready(temperature_sensor)) {
-        printk("Internal temperature sensor is not ready\n");
+    if (network_initialize() != 0) {
+        LOG_ERR("network init failed");
+    }
+
+    /* Real UTC timestamps for Sparkplug. If this fails, the MQTT thread
+     * retries before each session. */
+    time_sync_initialize();
+
+    mqtt_client_initialize();
+
+    if (ESP32_temperature_initialize() != 0) {
+        LOG_ERR("no temperature sensor, nothing to sample");
         return 0;
     }
 
+    /* Application thread: sample on a fixed interval and queue the result.
+     * The MQTT thread batches and publishes, so a slow or broken network
+     * never shifts the sampling interval. */
+    int64_t next = k_uptime_get();
+
     while (1) {
-        if (sensor_sample_fetch(temperature_sensor) == 0 &&
-            sensor_channel_get(temperature_sensor, SENSOR_CHAN_DIE_TEMP,
-                               &temperature) == 0) {
-            printk("Internal temperature: %d.%06d C\n",
-                   temperature.val1, temperature.val2);
-        } else {
-            printk("Failed to read internal temperature\n");
+        /* Stamped with uptime; converted to UTC when it is sent */
+        struct sparkplug_sample s = { .timestamp_ms = (uint64_t)k_uptime_get() };
+
+        if (ESP32_temperature_read(&s.temperature_c) == 0) {
+            mqtt_client_queue_sample(&s);
+            LOG_DBG("sample %d mC", (int)(s.temperature_c * 1000));
         }
 
-        k_sleep(K_SECONDS(15));
+        next += APP_SAMPLE_INTERVAL_S * MSEC_PER_SEC;
+        k_sleep(K_TIMEOUT_ABS_MS(next));
     }
+
+    return 0;
 }

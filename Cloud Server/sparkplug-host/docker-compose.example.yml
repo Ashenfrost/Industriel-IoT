@@ -1,0 +1,30 @@
+# The sparkplug-host service for ~/iot-stack/docker-compose.yml on the VPS.
+# Assumes this repo is cloned next to it:  ~/Industriel-IoT  and  ~/iot-stack
+#
+#   docker compose up -d --build sparkplug-host
+#   docker compose logs -f sparkplug-host
+
+services:
+  sparkplug-host:
+    build:
+      context: ../Industriel-IoT                    # repo root (needs proto/)
+      dockerfile: "Cloud Server/sparkplug-host/Dockerfile"
+    restart: unless-stopped
+    depends_on:
+      - mosquitto
+      - questdb
+    env_file: .env                                  # secrets, chmod 600
+    environment:
+      MQTT_HOST: mosquitto        # service name on the compose network
+      MQTT_PORT: "1883"
+      SPARKPLUG_GROUP: "UCL"      # or "+" for all groups
+      LOG_LEVEL: INFO
+
+# ~/iot-stack/.env:
+#   MQTT_USERNAME=sparkplug-host
+#   MQTT_PASSWORD=...
+#   QUESTDB_CONF=http::addr=questdb:9000;
+#
+# Test from inside the container (uses the host's own broker login):
+#   docker compose exec sparkplug-host sh -c \
+#     'python fake_edge_node.py --host mosquitto -u "$MQTT_USERNAME" -P "$MQTT_PASSWORD" --sessions 2 --cycle 5'
