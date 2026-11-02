@@ -72,12 +72,20 @@ dkms.conf
 .env
 
 # Editor
+.pio
 .vscode/
 
-# wifi
-src/wifi_creds.h
+# IoTEdge wifi
+IoTEdge/src/wifi_creds.h
+IoTEdge/wifi_creds.h
 wifi_creds.h
 
-# mqtt
-src/mqtt_settings.h
+# IoTEdge mqtt
+IoTEdge/src/mqtt_settings.h
+IoTEdge/mqtt_settings.h
 mqtt_settings.h
+
+# IoTSimPLC
+IoTSimPLC/includes/wifi_creds.h
+IoTSimPLC/wifi_creds.h
+wifi_creds.h
