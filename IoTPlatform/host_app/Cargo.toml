@@ -1,0 +1,10 @@
+[package] 
+name = "host_app" 
+version = "0.1.0" 
+edition = "2024" 
+
+[dependencies] 
+anyhow = "1" 
+prost = "0.13" 
+questdb-rs = "4" 
+rumqttc = "0.24"
