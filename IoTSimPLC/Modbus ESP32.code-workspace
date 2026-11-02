@@ -1,0 +1,12 @@
+{
+	"folders": [
+		{
+			"path": "../Modbus ESP32"
+		},
+		{
+			"name": "Idustriel IoT PLC",
+			"path": "."
+		}
+	],
+	"settings": {}
+}
