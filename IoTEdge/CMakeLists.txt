@@ -9,5 +9,6 @@ target_sources(app PRIVATE
     src/main.c
     src/mqtt_client.c
     src/mqtt_payload.c
+    src/modbus_client.c
     src/wifi_network.c
 )
