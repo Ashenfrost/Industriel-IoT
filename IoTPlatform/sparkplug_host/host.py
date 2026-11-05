@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 
 import paho.mqtt.client as mqtt
 
-import sparkplug_b_pb2 as sp  # generated from proto/sparkplug_b.proto at build
+import sparkplug_b_pb2 as sp  # generated from IoTEdge/proto/sparkplug_b.proto at build
 
 log = logging.getLogger("sparkplug-host")
 

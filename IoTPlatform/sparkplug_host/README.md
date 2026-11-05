@@ -43,7 +43,7 @@ WHERE metric = 'Temperature' ORDER BY timestamp DESC LIMIT 50;
 
 See `docker-compose.example.yml` for the service block. The Docker build
 context must be the **repo root**, because the image compiles the same
-`proto/sparkplug_b.proto` the firmware uses. That way the firmware and cloud
+`IoTEdge/proto/sparkplug_b.proto` the firmware uses. That way the firmware and cloud
 can never disagree on the format.
 
 Give the host its own broker user:
@@ -78,7 +78,7 @@ still has to pass the client's write ACL. That is why NDEATH is in the list.
 
 ```
 pip install paho-mqtt protobuf grpcio-tools
-python -m grpc_tools.protoc -I ../../proto --python_out=. ../../proto/sparkplug_b.proto
+python -m grpc_tools.protoc -I ../../IoTEdge/proto --python_out=. ../../IoTEdge/proto/sparkplug_b.proto
 python fake_edge_node.py --host <vps-ip> -u <user> -P <pw>
 python fake_edge_node.py ... --skip-seq 2    # host logs a seq gap
 python fake_edge_node.py ... --die 2         # session 2 dies, broker sends the Will

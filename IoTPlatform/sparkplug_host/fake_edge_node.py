@@ -11,7 +11,7 @@ and every --cycle seconds runs one short session:
                                                  # (broker publishes the Will)
 
 Needs: pip install paho-mqtt protobuf grpcio-tools, then
-python -m grpc_tools.protoc -I ../../proto --python_out=. ../../proto/sparkplug_b.proto
+python -m grpc_tools.protoc -I ../../IoTEdge/proto --python_out=. ../../IoTEdge/proto/sparkplug_b.proto
 """
 
 import argparse

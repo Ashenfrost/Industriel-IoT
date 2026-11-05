@@ -7,8 +7,8 @@
 services:
   sparkplug-host:
     build:
-      context: ../Industriel-IoT                    # repo root (needs proto/)
-      dockerfile: "Cloud Server/sparkplug-host/Dockerfile"
+      context: ../Industriel-IoT                    # repo root (needs IoTEdge/proto/)
+      dockerfile: IoTPlatform/sparkplug_host/Dockerfile
     restart: unless-stopped
     depends_on:
       - mosquitto
