@@ -8,7 +8,7 @@
 /* Sparkplug B group id: first level after "spBv1.0/" in every topic.
  * Keep it short - it is sent in every single topic string. */
 #ifndef SPARKPLUG_GROUP_ID
-#define SPARKPLUG_GROUP_ID "UCL"
+#define SPARKPLUG_GROUP_ID "GRP1"
 #endif
 
 /* How often the sensor is read (kravspec Projekt A: 5-15 s). */
