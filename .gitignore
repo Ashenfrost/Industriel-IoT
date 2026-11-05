@@ -55,8 +55,8 @@ dkms.conf
 *.dwo
 
 # Build-output
-/build/
-/build-*/
+build/
+build-*/
 *.o
 *.elf
 *.map
@@ -72,14 +72,13 @@ dkms.conf
 .env
 
 # Editor
+.pio
 .vscode/
 
-# wifi
-src/wifi_creds.h
+# IoTEdge & IoTSimPLC wifi
 wifi_creds.h
 
-# mqtt
-src/mqtt_settings.h
+# IoTEdge mqtt
 mqtt_settings.h
 
 # python (cloud tools)
