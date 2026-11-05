@@ -1,0 +1,39 @@
+title Industriel IoT
+
+participant HP Core
+participant LP Core
+participant WiFi Modem
+participant Server
+
+HP Core->HP Core: Setup
+HP Core->LP Core:Setup
+LP Core->WiFi Modem:Wake up
+LP Core->LP Core:Sleep
+LP Core->(40)LP Core: Timer 10 sec
+space -48
+HP Core->HP Core:Temp Read
+space -6
+WiFi Modem->(1)Server:Where you at bro?
+HP Core->HP Core:Sleep
+space -5
+Server->(1)WiFi Modem:Right here bro!
+WiFi Modem->LP Core:Ye I'm ready
+LP Core->LP Core: Wake up
+LP Core->HP Core:Wake up
+LP Core->LP Core:Sleep
+HP Core->HP Core:Compile Datapacket\nSparkplug B, MQTT \nBUZZWORDS
+HP Core->WiFi Modem: Send it!
+WiFi Modem<->Server:TLS Handshake
+WiFi Modem->Server:Take my load!
+Server->WiFi Modem:Thanks, got it
+WiFi Modem->HP Core:All done
+HP Core->HP Core: Sleep
+LP Core->LP Core:Wake up
+LP Core->HP Core:Wake up
+LP Core->(20)LP Core:Timer 10 sec
+space -22
+LP Core->LP Core:Sleep
+HP Core->HP Core:Temp read
+HP Core->HP Core:Sleep
+
+
