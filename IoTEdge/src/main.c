@@ -7,6 +7,7 @@
 #include "mqtt_client.h"
 #include "time_sync.h"
 #include "ESP32_temperature.h"
+#include "modbus_client.h"
 
 LOG_MODULE_REGISTER(app, LOG_LEVEL_INF);
 
@@ -27,9 +28,12 @@ int main(void)
 
     mqtt_client_initialize();
 
-    if (ESP32_temperature_initialize() != 0) {
-        LOG_ERR("no temperature sensor, nothing to sample");
-        return 0;
+    modbus_client_initialize();
+    LOG_INF("modbus init done");
+
+    bool have_temp = (ESP32_temperature_initialize() == 0);
+    if (!have_temp) {
+        LOG_ERR("no internal temperature sensor");
     }
 
     /* Application thread: sample on a fixed interval and queue the result.
@@ -41,9 +45,17 @@ int main(void)
         /* Stamped with uptime; converted to UTC when it is sent */
         struct sparkplug_sample s = { .timestamp_ms = (uint64_t)k_uptime_get() };
 
-        if (ESP32_temperature_read(&s.temperature_c) == 0) {
+        if (have_temp && ESP32_temperature_read(&s.temperature_c) == 0) {
             mqtt_client_queue_sample(&s);
             LOG_DBG("sample %d mC", (int)(s.temperature_c * 1000));
+        }
+
+        struct modbus_readings r;
+
+        if (modbus_client_get_readings(&r) == 0) {
+            LOG_INF("x10 temp: %d %d %d, status 0x%x, beat %u",
+                    r.temp_x10[0], r.temp_x10[1], r.temp_x10[2],
+                    r.status, r.heartbeat);
         }
 
         next += APP_SAMPLE_INTERVAL_S * MSEC_PER_SEC;
