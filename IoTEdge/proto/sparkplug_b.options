@@ -1,0 +1,20 @@
+# nanopb options for the Sparkplug B payload (Eclipse Tahu sparkplug_b.proto).
+# Everything we never send or parse is ignored, so the structs stay small and static.
+org.eclipse.tahu.protobuf.Payload.metrics                 max_count:60
+org.eclipse.tahu.protobuf.Payload.uuid                    type:FT_IGNORE
+org.eclipse.tahu.protobuf.Payload.body                    type:FT_IGNORE
+org.eclipse.tahu.protobuf.Payload.Metric.name             max_size:24
+org.eclipse.tahu.protobuf.Payload.Metric.string_value     type:FT_IGNORE
+org.eclipse.tahu.protobuf.Payload.Metric.bytes_value      type:FT_IGNORE
+org.eclipse.tahu.protobuf.Payload.Metric.metadata         type:FT_IGNORE
+org.eclipse.tahu.protobuf.Payload.Metric.properties       type:FT_IGNORE
+org.eclipse.tahu.protobuf.Payload.Metric.dataset_value    type:FT_IGNORE
+org.eclipse.tahu.protobuf.Payload.Metric.template_value   type:FT_IGNORE
+org.eclipse.tahu.protobuf.Payload.Metric.extension_value  type:FT_IGNORE
+# Nested types we never use: skip generating them entirely.
+org.eclipse.tahu.protobuf.Payload.Template                skip_message:true
+org.eclipse.tahu.protobuf.Payload.DataSet                 skip_message:true
+org.eclipse.tahu.protobuf.Payload.PropertyValue           skip_message:true
+org.eclipse.tahu.protobuf.Payload.PropertySet             skip_message:true
+org.eclipse.tahu.protobuf.Payload.PropertySetList         skip_message:true
+org.eclipse.tahu.protobuf.Payload.MetaData                skip_message:true

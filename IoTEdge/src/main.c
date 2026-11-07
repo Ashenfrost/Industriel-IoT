@@ -1,40 +1,66 @@
 #include <zephyr/kernel.h>
-#include <zephyr/sys/printk.h>
+#include <zephyr/logging/log.h>
 
+#include "app_config.h"
 #include "client_id.h"
 #include "wifi_network.h"
 #include "mqtt_client.h"
+#include "time_sync.h"
 #include "ESP32_temperature.h"
 #include "modbus_client.h"
 
+LOG_MODULE_REGISTER(app, LOG_LEVEL_INF);
+
 int main(void)
 {
-    printk("Zephyr app started\n");
+    LOG_INF("Zephyr app started");
 
     build_client_id_initialize();
-    printk("client id done\n");
+    LOG_INF("client id: %s", build_client_id_get());
 
-    network_initialize();
-    printk("network init done\n");
+    if (network_initialize() != 0) {
+        LOG_ERR("network init failed");
+    }
+
+    /* Real UTC timestamps for Sparkplug. If this fails, the MQTT thread
+     * retries before each session. */
+    time_sync_initialize();
 
     mqtt_client_initialize();
-    printk("mqtt init done\n");
 
     modbus_client_initialize();
-    printk("modbus init done\n");
+    LOG_INF("modbus init done");
 
-    //ESP32_temperature_initialize();
+    bool have_temp = (ESP32_temperature_initialize() == 0);
+    if (!have_temp) {
+        LOG_ERR("no internal temperature sensor");
+    }
 
-       while (1) {
-       struct modbus_readings r;
+    /* Application thread: sample on a fixed interval and queue the result.
+     * The MQTT thread batches and publishes, so a slow or broken network
+     * never shifts the sampling interval. */
+    int64_t next = k_uptime_get();
 
-       if (modbus_client_get_readings(&r) == 0) {
-           printk("x10 temp: %d %d %d, status 0x%x, beat %u\n",
-                  r.temp_x10[0], r.temp_x10[1], r.temp_x10[2],
-                  r.status, r.heartbeat);
-       }
-       k_sleep(K_SECONDS(5));
-   }
+    while (1) {
+        /* Stamped with uptime; converted to UTC when it is sent */
+        struct sparkplug_sample s = { .timestamp_ms = (uint64_t)k_uptime_get() };
+
+        if (have_temp && ESP32_temperature_read(&s.temperature_c) == 0) {
+            mqtt_client_queue_sample(&s);
+            LOG_DBG("sample %d mC", (int)(s.temperature_c * 1000));
+        }
+
+        struct modbus_readings r;
+
+        if (modbus_client_get_readings(&r) == 0) {
+            LOG_INF("x10 temp: %d %d %d, status 0x%x, beat %u",
+                    r.temp_x10[0], r.temp_x10[1], r.temp_x10[2],
+                    r.status, r.heartbeat);
+        }
+
+        next += APP_SAMPLE_INTERVAL_S * MSEC_PER_SEC;
+        k_sleep(K_TIMEOUT_ABS_MS(next));
+    }
 
     return 0;
 }
