@@ -51,11 +51,15 @@ int main(void)
         }
 
         struct modbus_readings r;
+        int mrc = modbus_client_get_readings(&r);
 
-        if (modbus_client_get_readings(&r) == 0) {
-            LOG_INF("x10 temp: %d %d %d, status 0x%x, beat %u",
-                    r.temp_x10[0], r.temp_x10[1], r.temp_x10[2],
-                    r.status, r.heartbeat);
+        if (mrc == 0) {
+            LOG_INF("x10 temp: %d %d %d, hum: %d %d %d, status 0x%x, beat %u",
+                r.temp_x10[0], r.temp_x10[1], r.temp_x10[2],
+                r.hum_x10[0], r.hum_x10[1], r.hum_x10[2],
+                r.status, r.heartbeat);
+        } else {
+            LOG_WRN("no modbus data: %d", mrc);
         }
 
         next += APP_SAMPLE_INTERVAL_S * MSEC_PER_SEC;
