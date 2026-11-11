@@ -45,10 +45,11 @@
 #define APP_MODEM_ATTACH_MS     120000
 
 /* MQTT over TLS (issue #22). Cellular uplink only: TLS runs inside the
- * modem. Needs a TLS listener on the broker; the CA certificate it is
- * checked against lives in mqtt_ca_cert.h. */
+ * modem. The broker's TLS listener is on APP_MQTT_TLS_PORT; the CA its
+ * certificate is checked against lives in mqtt_ca_cert.h.
+ * Override with -DEXTRA_CFLAGS=-DAPP_MQTT_TLS=0 for plain MQTT on 1883. */
 #ifndef APP_MQTT_TLS
-#define APP_MQTT_TLS            0
+#define APP_MQTT_TLS            1
 #endif
 #define APP_MQTT_TLS_PORT       8883
 

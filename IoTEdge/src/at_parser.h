@@ -33,6 +33,9 @@ extern "C" {
 #ifndef AT_MAX_URC
 #define AT_MAX_URC 16
 #endif
+#ifndef AT_PROMPT_DELAY_MS
+#define AT_PROMPT_DELAY_MS 20 /* pause mellem ">" og data i at_send_data() */
+#endif
 
 /* URC-flag: linjen er ALTID et URC, også selvom den aktuelle kommando har samme præfiks
  * (fx "+SMSUB:" som kan komme midt i svaret på AT+SMSUB=...). */

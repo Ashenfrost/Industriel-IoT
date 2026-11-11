@@ -422,6 +422,10 @@ int at_send_data(const char *cmd, const void *data, size_t len, k_timeout_t time
 	if (ret == 0) {
 		/* fase 2: data -> OK. Arm FØR data sendes, så OK ikke overses. */
 		arm(cmd, NULL, false, NULL, 0);
+		/* Modemet skriver "> " og skal derefter skifte til datatilstand. Sendes data
+		 * i samme øjeblik som '>' ses, kan de første bytes gå tabt (set med TLS på
+		 * SIM7080: tabte/ødelagte beskeder og "malformed packet" på brokeren). */
+		k_msleep(AT_PROMPT_DELAY_MS);
 		tx(data, len);
 		ret = wait_done(timeout);
 	}
