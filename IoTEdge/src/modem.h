@@ -60,6 +60,18 @@ int modem_mqtt_subscribe(const char *topic, int qos);
 
 void modem_set_message_cb(modem_msg_cb_t cb, void *user);
 
+/**
+ * UTC-tid fra modemet i ms siden Unix epoch (opløsning 1 s).
+ *
+ * Med ntp_server (kræver PDP oppe, se modem_pdp_up): AT+CNTP mod den server. Modemets
+ * ur sættes samtidig til UTC. Fejler NTP, eller er ntp_server NULL, bruges modemets ur
+ * via AT+CCLK? - det er tiden fra mobilnettet (NITZ) eller den sidste NTP-sync.
+ *
+ * Returnerer 0, -EAGAIN hvis modemet ikke har en gyldig tid endnu, ellers AT-fejl.
+ * Skal kaldes fra samme tråd som de andre modem_*()-kald.
+ */
+int modem_get_utc_ms(const char *ntp_server, int64_t *epoch_ms);
+
 #ifdef __cplusplus
 }
 #endif

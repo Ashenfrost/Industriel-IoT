@@ -2,9 +2,12 @@
 #include "time_sync.h"
 #include "app_config.h"
 
+#include <errno.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#if defined(CONFIG_SNTP)
 #include <zephyr/net/sntp.h>
+#endif
 
 LOG_MODULE_REGISTER(time_sync, LOG_LEVEL_INF);
 
@@ -19,7 +22,11 @@ static int64_t offset_ms;
 static atomic_t valid;
 static int64_t last_sync_uptime_ms;
 
-int time_sync_initialize(void)
+/* NULL = SNTP over Zephyr's own network stack (the Wi-Fi path). */
+static time_sync_source_t source;
+
+#if defined(CONFIG_SNTP)
+static int sntp_epoch_ms(int64_t *epoch_ms)
 {
 	struct sntp_time ts;
 	int ret = -EIO;
@@ -31,22 +38,44 @@ int time_sync_initialize(void)
 		}
 		LOG_WRN("SNTP attempt %d failed: %d", i + 1, ret);
 	}
-
 	if (ret) {
-		LOG_ERR("No SNTP time, timestamps will be uptime-based");
+		LOG_ERR("No SNTP time");
 		return ret;
 	}
-
 	/* fraction is 1/2^32 s; convert to ms */
-	int64_t epoch_ms = (int64_t)ts.seconds * 1000 +
-			   (int64_t)(((uint64_t)ts.fraction * 1000U) >> 32);
+	*epoch_ms = (int64_t)ts.seconds * 1000 +
+		    (int64_t)(((uint64_t)ts.fraction * 1000U) >> 32);
+	return 0;
+}
+#else
+static int sntp_epoch_ms(int64_t *epoch_ms)
+{
+	ARG_UNUSED(epoch_ms);
+	return -ENOTSUP; /* no Zephyr network stack: set a source instead */
+}
+#endif
+
+void time_sync_set_source(time_sync_source_t src)
+{
+	source = src;
+}
+
+int time_sync_initialize(void)
+{
+	int64_t epoch_ms;
+	int ret = source ? source(&epoch_ms) : sntp_epoch_ms(&epoch_ms);
+
+	if (ret) {
+		LOG_ERR("No UTC time (%d), timestamps will be uptime-based", ret);
+		return ret;
+	}
 
 	K_SPINLOCK(&lock) {
 		last_sync_uptime_ms = k_uptime_get();
 		offset_ms = epoch_ms - last_sync_uptime_ms;
 	}
 	atomic_set(&valid, 1);
-	LOG_INF("Time synced: %lld s since epoch", (long long)ts.seconds);
+	LOG_INF("Time synced: %lld s since epoch", (long long)(epoch_ms / 1000));
 	return 0;
 }
 
