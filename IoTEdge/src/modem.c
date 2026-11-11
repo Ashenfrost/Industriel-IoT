@@ -29,6 +29,7 @@ LOG_MODULE_REGISTER(modem, LOG_LEVEL_INF);
 #define MODEM_MIN_VALID_YEAR 2024
 
 static const struct modem_cfg *cfg;
+static bool ca_uploaded;
 static bool urcs_registered;
 static atomic_t mqtt_up;
 static atomic_t pdp_up_flag;
@@ -176,6 +177,7 @@ int modem_init(const struct device *uart, const struct modem_cfg *c)
 		return -EINVAL;
 	}
 	cfg = c;
+	ca_uploaded = false; /* ny konfiguration kan have et andet CA */
 
 	ret = at_init(uart);
 	if (ret && ret != -EALREADY) {
@@ -309,6 +311,92 @@ static int smstate_query(void)
 	return s;
 }
 
+/* ------------------------------------------------------------------ */
+/* TLS                                                                 */
+/* ------------------------------------------------------------------ */
+
+#define CA_FILE      "ca.pem"
+#define T_CFS_MS     10000
+#define SSL_CTX      0      /* AT+CSSLCFG-kontekst; AT+SMSSL=1 peger på kontekst 0 */
+
+/* Hostname (til SNI) eller rå IPv4? SNI må ikke indeholde en IP-adresse. */
+static bool is_ipv4(const char *s)
+{
+	for (; *s; s++) {
+		if (!((*s >= '0' && *s <= '9') || *s == '.')) {
+			return false;
+		}
+	}
+	return true;
+}
+
+/* Lægger CA-certifikatet i modemets filsystem og konverterer det til modemets eget
+ * format. Én gang pr. boot; filen overlever ikke nødvendigvis et modem-reset. */
+static int upload_ca(const char *pem)
+{
+	size_t len = strlen(pem);
+	int ret;
+
+	if (len == 0 || len > 10240) {
+		return -EINVAL;
+	}
+	ret = at_send("AT+CFSINIT", NULL, 0, K_MSEC(T_CONF_MS));
+	if (ret) {
+		return ret;
+	}
+	char cmd[64];
+
+	/* dir 3 = /customer, mode 0 = overskriv, timeout i ms til at modtage data */
+	snprintk(cmd, sizeof(cmd), "AT+CFSWFILE=3,\"%s\",0,%u,%u", CA_FILE, (unsigned int)len,
+		 T_CFS_MS);
+	ret = at_send_data(cmd, pem, len, K_MSEC(T_CFS_MS));
+	(void)at_send("AT+CFSTERM", NULL, 0, K_MSEC(T_CONF_MS));
+	if (ret) {
+		LOG_ERR("CA-upload fejlede (%d)", ret);
+		return ret;
+	}
+	/* 2 = rodcertifikat */
+	ret = cmdf(T_CONF_MS, NULL, 0, "AT+CSSLCFG=\"CONVERT\",2,\"%s\"", CA_FILE);
+	if (ret) {
+		LOG_ERR("CA-certifikatet kunne ikke konverteres (%d) - er det gyldig PEM?", ret);
+		return ret;
+	}
+	LOG_INF("CA-certifikat uploadet (%u bytes)", (unsigned int)len);
+	return 0;
+}
+
+static int tls_configure(void)
+{
+	bool verify = cfg->ca_cert_pem && cfg->ca_cert_pem[0];
+	int ret;
+
+	if (!cfg->tls) {
+		return at_send("AT+SMSSL=0", NULL, 0, K_MSEC(T_CONF_MS));
+	}
+	if (verify && !ca_uploaded) {
+		ret = upload_ca(cfg->ca_cert_pem);
+		if (ret) {
+			return ret;
+		}
+		ca_uploaded = true;
+	}
+	/* 3 = TLS 1.2 */
+	ret = cmdf(T_CONF_MS, NULL, 0, "AT+CSSLCFG=\"SSLVERSION\",%d,3", SSL_CTX);
+	if (ret) {
+		return ret;
+	}
+	if (!is_ipv4(cfg->broker)) {
+		ret = cmdf(T_CONF_MS, NULL, 0, "AT+CSSLCFG=\"SNI\",%d,\"%s\"", SSL_CTX, cfg->broker);
+		if (ret) {
+			return ret;
+		}
+	}
+	if (!verify) {
+		LOG_WRN("TLS uden certifikat-tjek (ingen CA sat)");
+	}
+	return cmdf(T_CONF_MS, NULL, 0, "AT+SMSSL=1,\"%s\",\"\"", verify ? CA_FILE : "");
+}
+
 static int sub_at(const char *topic, int qos)
 {
 	return cmdf(T_SMSUB_MS, NULL, 0, "AT+SMSUB=\"%s\",%d", topic, qos);
@@ -344,18 +432,30 @@ int modem_mqtt_connect(void)
 	if (ret) {
 		return ret;
 	}
-	if (cfg->username && cfg->username[0]) {
-		ret = conf_str("USERNAME", cfg->username);
-		if (ret) {
-			return ret;
-		}
-		ret = conf_str("PASSWORD", cfg->password ? cfg->password : "");
-		if (ret) {
-			return ret;
-		}
+	/* Altid sæt (eller ryd) login, så værdier fra en tidligere konfiguration ikke hænger ved */
+	ret = conf_str("USERNAME", cfg->username ? cfg->username : "");
+	if (ret) {
+		return ret;
+	}
+	ret = conf_str("PASSWORD", cfg->password ? cfg->password : "");
+	if (ret) {
+		return ret;
+	}
+	/* Ingen Will (se modem.h): tomt topic = ingen Will i CONNECT */
+	ret = conf_str("TOPIC", "");
+	if (ret) {
+		return ret;
+	}
+	ret = conf_str("MESSAGE", "");
+	if (ret) {
+		return ret;
+	}
+	ret = tls_configure();
+	if (ret) {
+		return ret;
 	}
 
-	LOG_INF("MQTT connect %s:%u", cfg->broker, cfg->port);
+	LOG_INF("MQTT connect %s:%u%s", cfg->broker, cfg->port, cfg->tls ? " (TLS)" : "");
 	ret = at_send("AT+SMCONN", NULL, 0, K_MSEC(T_SMCONN_MS));
 	if (ret) {
 		return ret;

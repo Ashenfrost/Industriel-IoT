@@ -139,6 +139,11 @@ static void process_line(const char *line)
 			}
 			goto out;
 		}
+		/* Fil-upload (AT+CFSWFILE) beder om data med linjen "DOWNLOAD" i stedet for ">" */
+		if (st.prompt && strcmp(line, "DOWNLOAD") == 0) {
+			complete(0);
+			goto out;
+		}
 		/* 3. slutkoder */
 		if (strcmp(line, "OK") == 0) {
 			st.got_ok = true;

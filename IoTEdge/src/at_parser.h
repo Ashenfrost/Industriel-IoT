@@ -62,7 +62,8 @@ int at_send_expect(const char *cmd, const char *expect, char *resp, size_t resp_
 		   k_timeout_t timeout);
 
 /**
- * Prompt-kommando: send cmd, vent på ">", send `data` (len bytes, binærsikkert), vent på OK.
+ * Prompt-kommando: send cmd, vent på ">" (eller linjen "DOWNLOAD", som AT+CFSWFILE bruger),
+ * send `data` (len bytes, binærsikkert), vent på OK.
  * timeout gælder for hver af de to faser.
  */
 int at_send_data(const char *cmd, const void *data, size_t len, k_timeout_t timeout);

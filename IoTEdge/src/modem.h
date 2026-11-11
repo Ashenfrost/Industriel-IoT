@@ -30,7 +30,19 @@ struct modem_cfg {
 	const char *password;
 	uint16_t keepalive_s;     /* 0 = 60 */
 	bool clean_session;
+	/* TLS inde i modemet (TLS 1.2). ca_cert_pem = brokerens CA i PEM; NULL eller ""
+	 * = krypteret, men serverens certifikat tjekkes ikke. */
+	bool tls;
+	const char *ca_cert_pem;
 };
+
+/*
+ * Bemærk om MQTT Will: SIM7080 tager Will-beskeden (AT+SMCONF="MESSAGE") som en
+ * tekststreng i anførselstegn, så en binær payload som en Sparkplug NDEATH kan ikke
+ * bruges som Will (testet: SMPUBHEX og MESSAGELEN hjælper ikke). modem_mqtt_connect()
+ * rydder derfor altid Will-felterne. Send selv NDEATH med modem_mqtt_publish() før
+ * disconnect.
+ */
 
 typedef void (*modem_msg_cb_t)(const char *topic, const uint8_t *payload, size_t len, void *user);
 
