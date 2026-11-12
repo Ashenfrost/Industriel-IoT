@@ -30,7 +30,19 @@ struct modem_cfg {
 	const char *password;
 	uint16_t keepalive_s;     /* 0 = 60 */
 	bool clean_session;
+	/* TLS inde i modemet (TLS 1.2). ca_cert_pem = brokerens CA i PEM; NULL eller ""
+	 * = krypteret, men serverens certifikat tjekkes ikke. */
+	bool tls;
+	const char *ca_cert_pem;
 };
+
+/*
+ * Bemærk om MQTT Will: SIM7080 tager Will-beskeden (AT+SMCONF="MESSAGE") som en
+ * tekststreng i anførselstegn, så en binær payload som en Sparkplug NDEATH kan ikke
+ * bruges som Will (testet: SMPUBHEX og MESSAGELEN hjælper ikke). modem_mqtt_connect()
+ * rydder derfor altid Will-felterne. Send selv NDEATH med modem_mqtt_publish() før
+ * disconnect.
+ */
 
 typedef void (*modem_msg_cb_t)(const char *topic, const uint8_t *payload, size_t len, void *user);
 
@@ -59,6 +71,18 @@ int modem_mqtt_publish(const char *topic, const void *payload, size_t len, int q
 int modem_mqtt_subscribe(const char *topic, int qos);
 
 void modem_set_message_cb(modem_msg_cb_t cb, void *user);
+
+/**
+ * UTC-tid fra modemet i ms siden Unix epoch (opløsning 1 s).
+ *
+ * Med ntp_server (kræver PDP oppe, se modem_pdp_up): AT+CNTP mod den server. Modemets
+ * ur sættes samtidig til UTC. Fejler NTP, eller er ntp_server NULL, bruges modemets ur
+ * via AT+CCLK? - det er tiden fra mobilnettet (NITZ) eller den sidste NTP-sync.
+ *
+ * Returnerer 0, -EAGAIN hvis modemet ikke har en gyldig tid endnu, ellers AT-fejl.
+ * Skal kaldes fra samme tråd som de andre modem_*()-kald.
+ */
+int modem_get_utc_ms(const char *ntp_server, int64_t *epoch_ms);
 
 #ifdef __cplusplus
 }

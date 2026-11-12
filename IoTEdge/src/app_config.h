@@ -33,6 +33,26 @@
  * session loses nothing. When full, the oldest sample is dropped. */
 #define APP_SAMPLE_QUEUE_LEN    (2 * APP_PUBLISH_INTERVAL_S / APP_SAMPLE_INTERVAL_S)
 
+/* Uplink to the broker: 1 = SIM7080G cellular modem (LTE-M) on UART1,
+ * 0 = Wi-Fi with Zephyr's own MQTT client. Wi-Fi is started either way,
+ * because Modbus TCP to the SimPLC runs over the local Wi-Fi.
+ * Override with -DEXTRA_CFLAGS=-DAPP_UPLINK_CELLULAR=0 */
+#ifndef APP_UPLINK_CELLULAR
+#define APP_UPLINK_CELLULAR     1
+#endif
+#define APP_MODEM_APN           "onomondo"
+/* How long to wait for LTE registration in a session before giving up. */
+#define APP_MODEM_ATTACH_MS     120000
+
+/* MQTT over TLS (issue #22). Cellular uplink only: TLS runs inside the
+ * modem. The broker's TLS listener is on APP_MQTT_TLS_PORT; the CA its
+ * certificate is checked against lives in mqtt_ca_cert.h.
+ * Override with -DEXTRA_CFLAGS=-DAPP_MQTT_TLS=0 for plain MQTT on 1883. */
+#ifndef APP_MQTT_TLS
+#define APP_MQTT_TLS            1
+#endif
+#define APP_MQTT_TLS_PORT       8883
+
 /* SNTP: real UTC time for Sparkplug timestamps. Re-synced before a session
  * when the last sync is older than this, to correct clock drift. */
 #define APP_SNTP_SERVER         "pool.ntp.org"

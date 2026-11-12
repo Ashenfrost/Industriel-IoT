@@ -18,13 +18,18 @@ int main(void)
     build_client_id_initialize();
     LOG_INF("client id: %s", build_client_id_get());
 
+    /* Wi-Fi: uplink when APP_UPLINK_CELLULAR = 0, and always the local
+     * network for Modbus TCP to the SimPLC. */
     if (network_initialize() != 0) {
         LOG_ERR("network init failed");
     }
 
+#if !APP_UPLINK_CELLULAR
     /* Real UTC timestamps for Sparkplug. If this fails, the MQTT thread
-     * retries before each session. */
+     * retries before each session. With the cellular uplink the MQTT thread
+     * gets the time from the modem once the data connection is up. */
     time_sync_initialize();
+#endif
 
     mqtt_client_initialize();
 
