@@ -126,6 +126,38 @@ viser appen **average (mA)**, **max (mA)**, **charge (µC/mC)** og **tid** for u
 | Én Modbus-poll / én måling: ladning (µC) | |
 | Bemærkninger (fejl, genforbindelser, afvigelser) | |
 
+## Analyse med `analyze.py`
+
+Aflæsning i appen virker, men scriptet gør det samme for **alle** sessioner
+og faser i en optagelse og regner modellen ud. Kun Python's standardbibliotek.
+
+1. I Power Profiler: vælg hele optagelsen (eller et udsnit) og eksportér som
+   **CSV med digitale kanaler**.
+2. Tjek én gang at kanalerne læses rigtigt: kør `markers` på en test 2-optagelse;
+   `SAMPLE (D2)` skal have ca. én puls pr. 10 s. Er D0-D7 vendt om, så tilføj `--bits d7first`.
+
+```powershell
+cd <repo>\IoTEdge\tests\power
+python analyze.py selftest                                   # tjekker beregningerne (syntetiske data)
+python analyze.py markers results\test1.csv                  # test 1: baseline
+python analyze.py markers results\test2.csv --json results\test2.json
+python analyze.py markers results\test3.csv
+python analyze.py phases  results\test4.csv                  # test 4: én række pr. fase og runde
+python analyze.py model   --session results\test2.json       # interval vs. strøm og batteritid
+python analyze.py model   --session results\test2.json --rest-ma 0.9 --battery-mah 3000
+```
+
+- `markers` giver gennemsnit, max og ladning for hele optagelsen, gennemsnit
+  **uden for sessioner** (D0 lav), og for hver markør antal, varighed, ladning
+  og gennemsnit. Den regner også *overhead pr. session* ud: sessionens ladning
+  minus dens publishes (opkobling, TLS, NBIRTH, NDEATH, PDP).
+- `phases` deler test 4 op efter fase-nr. og skærer `--trim` sekunder (2,5 s)
+  af hver ende, så overgangene ikke tæller med.
+- `model` bruger tallene fra test 2 og regner gennemsnitsstrøm og batteritid
+  for flere publish-intervaller (300, 900, 1800, 3600 s). `--rest-ma` sætter
+  strømmen mellem målinger, fx et test 4-tal for et design med søvn i stedet
+  for test 2's "vågen"-tal. Uddata er markdown-tabeller, klar til rapporten.
+
 ## Fra målinger til design
 
 Med tallene kan gennemsnitsstrømmen for en hvilken som helst cyklus regnes ud:
