@@ -3,6 +3,8 @@
  * Everything that changes the data/power trade-off lives here, so it can be
  * tuned in one place (and argued for in the report).
  */
+
+/* *** POWER TEST BRANCH: test 2 batching: option A session every 300 s. Not for production. *** */
 #pragma once
 
 /* Sparkplug B group id: first level after "spBv1.0/" in every topic.
@@ -18,7 +20,7 @@
  * (option A: connect -> NBIRTH -> NDATA... -> NDEATH -> disconnect).
  * 3600 = hourly. Use something like 60 while developing. */
 #ifndef APP_PUBLISH_INTERVAL_S
-#define APP_PUBLISH_INTERVAL_S  3600
+#define APP_PUBLISH_INTERVAL_S  300
 #endif
 
 /* After a failed session (no network, broker down) try again this soon. */
@@ -59,7 +61,7 @@
 
 /* 1 = drive phase markers on GPIO18-21 for the PPK2 logic port. */
 #ifndef APP_POWER_MARKERS
-#define APP_POWER_MARKERS       0
+#define APP_POWER_MARKERS       1
 #endif
 
 /* 1 = "no power saving": connect once and stay connected, publish every
