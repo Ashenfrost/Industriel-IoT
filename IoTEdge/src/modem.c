@@ -199,6 +199,9 @@ int modem_init(const struct device *uart, const struct modem_cfg *c)
 		return ret;
 	}
 	at_send("AT+CMEE=2", NULL, 0, K_MSEC(T_FAST_MS)); /* tekstfejl i stedet for tal */
+	/* Radioen kan være slukket fra før (AT+CFUN=0, fx efter power_sleep_test). Så er
+	 * SIM'et også slukket, og CPIN-tjekket nedenfor fejler. Harmløst hvis den er tændt. */
+	at_send("AT+CFUN=1", NULL, 0, K_MSEC(T_CONF_MS));
 
 	char resp[48];
 

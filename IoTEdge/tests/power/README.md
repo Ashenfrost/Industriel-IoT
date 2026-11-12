@@ -100,7 +100,16 @@ viser appen **average (mA)**, **max (mA)**, **charge (µC/mC)** og **tid** for u
 
 ## Fælles fremgangsmåde
 
+**Optagelængde: 15 minutter for alle fire tests**, så resultaterne er nemme at
+sammenligne og forklare. Det giver 90 publishes i test 1, 3 sessioner i test 2,
+ca. 90 sessioner i test 3 og ca. 5 runder i test 4. Sammenlign på
+**gennemsnitsstrøm (mA)** og **ladning pr. måling (mC)**; de afhænger ikke af
+længden, så længe optagelsen dækker hele cyklusser.
+
 1. Tjek ud på test-branchen og byg (kommandoen står i testens `TEST.md`).
+   Flash **fra samme branch** eller med `west flash --skip-rebuild`: `west flash`
+   bygger ellers selv om, hvis kildekoden er ændret (fx efter et branch-skift),
+   og så flashes en anden firmware end den, der blev bygget.
 2. Flash ESP'en med USB tilsluttet. Kontrollér i konsollen at den starter
    normalt (Wi-Fi, modem, første session). Tag derefter **USB ud**.
 3. Kobl op som måling A (se ovenfor) og tænd forsyningen. Vent til den første
