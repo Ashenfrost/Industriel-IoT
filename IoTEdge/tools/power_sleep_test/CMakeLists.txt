@@ -1,0 +1,12 @@
+cmake_minimum_required(VERSION 3.20.0)
+find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
+project(power_sleep_test)
+
+# The real modem code from IoTEdge/src (not copies)
+set(EDGE_SRC ${CMAKE_CURRENT_LIST_DIR}/../../src)
+target_include_directories(app PRIVATE ${EDGE_SRC})
+target_sources(app PRIVATE
+    src/main.c
+    ${EDGE_SRC}/at_parser.c
+    ${EDGE_SRC}/modem.c
+)

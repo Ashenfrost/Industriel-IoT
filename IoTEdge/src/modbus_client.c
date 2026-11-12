@@ -1,6 +1,7 @@
 /* Modbus TCP master: Zephyr raw-ADU client + our own TCP transport */
 #include "modbus_client.h"
 #include "modbus_settings.h"
+#include "power_marker.h"
 
 #include <errno.h>
 #include <string.h>
@@ -208,6 +209,7 @@ static void poll_fn(void *p1, void *p2, void *p3)
 		int64_t t0 = k_uptime_get();
 		int rc;
 
+		power_marker_set(PM_MARK_MODBUS, true);
 		k_mutex_lock(&txn_lock, K_FOREVER);
 		rc = connect_locked();
 		if (rc == 0) {
@@ -215,6 +217,7 @@ static void poll_fn(void *p1, void *p2, void *p3)
 						      regs, MODBUS_REG_COUNT);
 		}
 		k_mutex_unlock(&txn_lock);
+		power_marker_set(PM_MARK_MODBUS, false);
 
 		if (rc == 0) {
 			store_readings(regs);

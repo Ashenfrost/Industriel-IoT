@@ -11,6 +11,7 @@ target_sources(app PRIVATE
     src/modem.c
     src/mqtt_client.c
     src/mqtt_payload.c
+    src/power_marker.c
     src/modbus_client.c
     src/sparkplug.c
     src/time_sync.c

@@ -7,6 +7,7 @@
 #include "mqtt_client.h"
 #include "time_sync.h"
 #include "modbus_client.h"
+#include "power_marker.h"
 
 LOG_MODULE_REGISTER(app, LOG_LEVEL_INF);
 
@@ -83,6 +84,7 @@ static void plc_sample(struct sparkplug_sample *s)
 int main(void)
 {
 	LOG_INF("Zephyr app started");
+	power_marker_init();
 
 	build_client_id_initialize();
 	LOG_INF("client id: %s", build_client_id_get());
@@ -125,9 +127,11 @@ int main(void)
 		 * fresh data); converted to UTC when it is sent */
 		struct sparkplug_sample s = { .timestamp_ms = (uint64_t)k_uptime_get() };
 
+		power_marker_set(PM_MARK_SAMPLE, true);
 		plc_sample(&s);
 		/* Queued even without PLC data: the nulls show the gap in QuestDB */
 		mqtt_client_queue_sample(&s);
+		power_marker_set(PM_MARK_SAMPLE, false);
 
 		next += APP_SAMPLE_INTERVAL_S * MSEC_PER_SEC;
 		k_sleep(K_TIMEOUT_ABS_MS(next));

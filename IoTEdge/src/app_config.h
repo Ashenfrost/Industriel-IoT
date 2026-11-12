@@ -55,6 +55,20 @@
 #endif
 #define APP_MQTT_TLS_PORT       8883
 
+/* ---- Power measurement switches (PPK2 tests, see IoTEdge/tests/power) ---- */
+
+/* 1 = drive phase markers on GPIO18-21 for the PPK2 logic port. */
+#ifndef APP_POWER_MARKERS
+#define APP_POWER_MARKERS       0
+#endif
+
+/* 1 = "no power saving": connect once and stay connected, publish every
+ * sample right away as its own NDATA (no batching, no disconnect).
+ * Cellular uplink only. 0 = option A sessions (the normal design). */
+#ifndef APP_PERSISTENT_SESSION
+#define APP_PERSISTENT_SESSION  0
+#endif
+
 /* SNTP: real UTC time for Sparkplug timestamps. Re-synced before a session
  * when the last sync is older than this, to correct clock drift. */
 #define APP_SNTP_SERVER         "pool.ntp.org"

@@ -36,6 +36,7 @@
 #include "client_id.h"
 #include "time_sync.h"
 #include "app_config.h"
+#include "power_marker.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
@@ -65,6 +66,8 @@ static K_THREAD_STACK_DEFINE(mqtt_stack, STACK_SIZE);
 static struct k_thread mqtt_thread_data;
 
 K_MSGQ_DEFINE(sample_q, sizeof(struct sparkplug_sample), APP_SAMPLE_QUEUE_LEN, 8);
+/* Given for every queued sample; only waited on in persistent mode */
+static K_SEM_DEFINE(sample_ready, 0, K_SEM_MAX_LIMIT);
 /* Counts samples dropped because the queue was full. The oldest samples are
  * the ones being published, so a drop during a publish means fewer items
  * are left to remove afterwards. */
@@ -166,7 +169,11 @@ static int uplink_open(void)
 /* Sparkplug: NBIRTH/NDATA/NDEATH are QoS 0 and never retained */
 static int uplink_publish(const char *topic, const uint8_t *data, size_t len)
 {
-	return modem_mqtt_publish(topic, data, len, 0, false);
+	power_marker_set(PM_MARK_PUBLISH, true);
+	int ret = modem_mqtt_publish(topic, data, len, 0, false);
+
+	power_marker_set(PM_MARK_PUBLISH, false);
+	return ret;
 }
 
 static int uplink_close(void)
@@ -437,6 +444,7 @@ int mqtt_client_queue_sample(const struct sparkplug_sample *sample)
 			LOG_WRN("Sample queue full, dropped oldest sample");
 		}
 	}
+	k_sem_give(&sample_ready);
 	return 0;
 }
 
@@ -526,6 +534,7 @@ static int run_session(void)
 		return ndeath_len;
 	}
 
+	power_marker_set(PM_MARK_SESSION, true);
 	int rc = uplink_open();
 
 	if (rc == 0) {
@@ -549,14 +558,58 @@ static int run_session(void)
 		}
 		if (rc == 0) {
 			LOG_INF("Session done, disconnected");
+			power_marker_set(PM_MARK_SESSION, false);
 			return 0;
 		}
 	}
 
 	LOG_ERR("Session failed: %d", rc);
 	uplink_abort();
+	power_marker_set(PM_MARK_SESSION, false);
 	return rc;
 }
+
+#if APP_PERSISTENT_SESSION
+BUILD_ASSERT(APP_UPLINK_CELLULAR, "APP_PERSISTENT_SESSION is only implemented for cellular "
+				  "(the modem keeps the MQTT keepalive by itself)");
+
+/* "No power saving" mode for the baseline measurement: connect once, then
+ * publish every sample as soon as it is queued. The SESSION marker stays
+ * high while connected. On an error the connection is dropped and set up
+ * again after APP_RETRY_INTERVAL_S. */
+static void persistent_loop(void)
+{
+	bool up = false;
+
+	while (1) {
+		if (!up) {
+			sparkplug_begin_session();
+			ndeath_len = sparkplug_encode_ndeath(ndeath_buf, sizeof(ndeath_buf));
+			power_marker_set(PM_MARK_SESSION, true);
+			up = (uplink_open() == 0 && publish_nbirth() == 0);
+			if (!up) {
+				LOG_ERR("Persistent connect failed, retrying in %d s",
+					APP_RETRY_INTERVAL_S);
+				uplink_abort();
+				power_marker_set(PM_MARK_SESSION, false);
+				k_sleep(K_SECONDS(APP_RETRY_INTERVAL_S));
+				continue;
+			}
+			LOG_INF("Persistent session up");
+		}
+
+		k_sem_take(&sample_ready, K_FOREVER);
+		while (up && k_msgq_num_used_get(&sample_q) > 0) {
+			if (publish_ndata_chunk() < 0) {
+				LOG_ERR("Persistent publish failed, reconnecting");
+				uplink_abort();
+				power_marker_set(PM_MARK_SESSION, false);
+				up = false;
+			}
+		}
+	}
+}
+#endif
 
 static void mqtt_thread_fn(void *p1, void *p2, void *p3)
 {
@@ -574,6 +627,11 @@ static void mqtt_thread_fn(void *p1, void *p2, void *p3)
 		APP_UPLINK_CELLULAR && APP_MQTT_TLS ? " + TLS" : "");
 
 	uplink_init();
+
+#if APP_PERSISTENT_SESSION
+	LOG_WRN("APP_PERSISTENT_SESSION: staying connected, no batching (power baseline)");
+	persistent_loop();
+#endif
 
 	/* First session right away, so a fresh boot shows up on the host */
 	int64_t next = k_uptime_get();

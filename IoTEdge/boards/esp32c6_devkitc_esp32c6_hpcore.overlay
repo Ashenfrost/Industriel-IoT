@@ -1,9 +1,19 @@
 #include <zephyr/dt-bindings/pinctrl/esp32c6-pinctrl.h>
+#include <zephyr/dt-bindings/gpio/gpio.h>
 
 / {
     chosen {
         zephyr,console = &usb_serial;
         zephyr,shell-uart = &usb_serial;
+    };
+
+    /* Phase markers for PPK2 current measurements (power_marker.h).
+     * Only driven when APP_POWER_MARKERS = 1. PPK2 logic port D0-D3. */
+    zephyr,user {
+        power-marker-gpios = <&gpio0 18 GPIO_ACTIVE_HIGH>,
+                             <&gpio0 19 GPIO_ACTIVE_HIGH>,
+                             <&gpio0 20 GPIO_ACTIVE_HIGH>,
+                             <&gpio0 21 GPIO_ACTIVE_HIGH>;
     };
 };
 
