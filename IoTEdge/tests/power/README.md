@@ -19,6 +19,48 @@ Sammen giver de tallene til beregningen nederst.
 
 ---
 
+## Kom i gang på en ny PC (fx for at køre en test fra GitHub)
+
+1. **Zephyr 4.4** workspace og **Zephyr SDK** som i resten af projektet. I
+   Zephyr-venv'et skal Python-pakken `protobuf` være installeret
+   (`pip install protobuf`); nanopb bruger den til Sparkplug-formatet.
+2. Hent branchen:
+   ```powershell
+   git clone https://github.com/Ashenfrost/Industriel-IoT.git
+   cd Industriel-IoT
+   git switch power-test/3-no-batching        # eller den test du skal køre
+   ```
+3. **Udfyld de to filer med hemmeligheder**. De ligger i git som skabeloner
+   og må aldrig committes med rigtige værdier. Få værdierne fra Tobias:
+   - `IoTEdge/src/wifi_creds.h`: `WIFI_SSID`, `WIFI_PASSWORD` (hotspottet som
+     SimPLC'en også er på). Ikke nødvendig til test 4.
+   - `IoTEdge/src/mqtt_settings.h`: `MQTT_BROKER_HOSTNAME` (VPS'ens IP),
+     `MQTT_ESP32_USER`, `MQTT_ESP32_PASS`. `MQTT_BROKER_PORT` bruges kun uden TLS
+     (TLS er slået til og bruger port 8883). Ikke nødvendig til test 4.
+
+   Sørg bagefter for, at git ikke kan committe dem ved et uheld:
+   ```powershell
+   git update-index --skip-worktree IoTEdge/src/wifi_creds.h IoTEdge/src/mqtt_settings.h
+   ```
+4. **SimPLC'ens IP** (test 1-3) gives ved build, uden anførselstegn. Den står i
+   SimPLC'ens seriel-log ved opstart (`IPv4 address acquired: ...`):
+   ```powershell
+   west build -p always -b esp32c6_devkitc/esp32c6/hpcore <repo>\IoTEdge -S espressif-flash-4M -- -DEXTRA_CFLAGS=-DMODBUS_SERVER_IP_RAW=<simplc-ip>
+   west flash --esp-device COM6
+   ```
+   Flash fra samme branch du byggede på (se "Fælles fremgangsmåde").
+5. **Tjek i konsollen før USB tages ud** (fx med
+   `python IoTEdge\tools\scripts\capture.py COM6 60 log.txt`, som ikke resetter kortet):
+   Wi-Fi forbundet, `Modbus TCP connected`, og at sessionerne/publishes kommer
+   som testen beskriver.
+
+Kendte faldgruber:
+- Modemet står på fast **115200 baud** (`AT+IPR=115200`, gemt i modemet). Det
+  passer med firmwaren.
+- Brug de **nye, korte ledninger** til modemet; de gamle gav bitfejl.
+- Kører kortet søvn-testen (test 4), kan det ikke flashes mens det sover: hold
+  **BOOT**, tryk **RESET**, slip BOOT, flash.
+
 ## Udstyr
 
 - Nordic **Power Profiler Kit II (PPK2)** + micro-USB-kabel (data/power)
