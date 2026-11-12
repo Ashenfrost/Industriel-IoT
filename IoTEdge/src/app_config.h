@@ -3,6 +3,8 @@
  * Everything that changes the data/power trade-off lives here, so it can be
  * tuned in one place (and argued for in the report).
  */
+
+/* *** POWER TEST BRANCH: test 1 baseline: persistent connection, no batching, no sleep. Not for production. *** */
 #pragma once
 
 /* Sparkplug B group id: first level after "spBv1.0/" in every topic.
@@ -59,14 +61,14 @@
 
 /* 1 = drive phase markers on GPIO18-21 for the PPK2 logic port. */
 #ifndef APP_POWER_MARKERS
-#define APP_POWER_MARKERS       0
+#define APP_POWER_MARKERS       1
 #endif
 
 /* 1 = "no power saving": connect once and stay connected, publish every
  * sample right away as its own NDATA (no batching, no disconnect).
  * Cellular uplink only. 0 = option A sessions (the normal design). */
 #ifndef APP_PERSISTENT_SESSION
-#define APP_PERSISTENT_SESSION  0
+#define APP_PERSISTENT_SESSION  1
 #endif
 
 /* SNTP: real UTC time for Sparkplug timestamps. Re-synced before a session
