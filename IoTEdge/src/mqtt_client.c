@@ -80,7 +80,7 @@ static char topic_ndata[SPARKPLUG_TOPIC_LEN];
 static uint8_t ndeath_buf[32];
 static int ndeath_len;
 static uint8_t payload_buf[SPARKPLUG_PAYLOAD_LEN];
-static struct sparkplug_sample batch[APP_NDATA_MAX_SAMPLES];
+static struct sparkplug_sample batch[SPARKPLUG_MAX_SAMPLES_PER_NDATA];
 
 /* Last sample sent, so NBIRTH can report a current value */
 static struct sparkplug_sample last_sample;
@@ -93,10 +93,11 @@ static void mqtt_thread_fn(void *p1, void *p2, void *p3);
 /* ------------------------------------------------------------------ */
 #if APP_UPLINK_CELLULAR
 
-/* AT+SMPUB takes at most 1024 bytes. One NDATA sample is ~18 bytes, so 60
- * samples (~1.1 kB) don't fit; 50 (~0.9 kB) do with margin. */
+/* AT+SMPUB takes at most 1024 bytes. One sample is SP_METRICS_PER_SAMPLE (7)
+ * metrics of ~18 bytes = ~125 bytes, so 7 samples (~0.9 kB) fit with margin;
+ * 8 (the metric limit) would be ~1 kB, too close. */
 #define UPLINK_MAX_PAYLOAD      MODEM_MQTT_MAX_PAYLOAD
-#define NDATA_SAMPLES_PER_MSG   50
+#define NDATA_SAMPLES_PER_MSG   7
 
 static struct modem_cfg modem_cfg;   /* must live forever (modem keeps a pointer) */
 static bool modem_ready;
@@ -179,6 +180,9 @@ static int uplink_close(void)
 
 static void uplink_abort(void)
 {
+	if (!modem_ready) {
+		return; /* modem never answered: nothing to tear down, only timeouts */
+	}
 	(void)modem_mqtt_disconnect();
 	(void)modem_pdp_down();
 }
@@ -192,7 +196,7 @@ static void uplink_abort(void)
 #define TX_BUF_SIZE        256
 #define CONNACK_TIMEOUT_MS 10000
 #define UPLINK_MAX_PAYLOAD      sizeof(payload_buf)
-#define NDATA_SAMPLES_PER_MSG   APP_NDATA_MAX_SAMPLES
+#define NDATA_SAMPLES_PER_MSG   SPARKPLUG_MAX_SAMPLES_PER_NDATA
 
 static struct mqtt_client client;
 static struct sockaddr_storage broker;
@@ -453,7 +457,7 @@ static int publish_nbirth(void)
 	return ret;
 }
 
-BUILD_ASSERT(NDATA_SAMPLES_PER_MSG <= APP_NDATA_MAX_SAMPLES,
+BUILD_ASSERT(NDATA_SAMPLES_PER_MSG <= SPARKPLUG_MAX_SAMPLES_PER_NDATA,
 	     "more samples per message than the proto allows");
 
 /* Sends one NDATA with up to NDATA_SAMPLES_PER_MSG queued samples.

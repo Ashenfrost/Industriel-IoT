@@ -22,15 +22,17 @@
 #endif
 
 /* After a failed session (no network, broker down) try again this soon. */
+#ifndef APP_RETRY_INTERVAL_S
 #define APP_RETRY_INTERVAL_S    300
+#endif
 
-/* Max samples per NDATA message. One hour at 10 s = 360 samples, which is
- * sent as 6 messages of ~1 kB. Must match max_count in
- * proto/sparkplug_b.options. */
-#define APP_NDATA_MAX_SAMPLES   60
+/* Samples per NDATA message follow from the metric limit and the uplink's
+ * message size (see SPARKPLUG_MAX_SAMPLES_PER_NDATA and mqtt_client.c).
+ * One hour at 10 s = 360 samples of 7 metrics each: over cellular that is
+ * ~52 messages of ~0.9 kB per session. */
 
-/* Samples kept in RAM (16 B each). Two publish intervals, so one failed
- * session loses nothing. When full, the oldest sample is dropped. */
+/* Samples kept in RAM (40 B each, ~29 kB for 720). Two publish intervals, so
+ * one failed session loses nothing. When full, the oldest sample is dropped. */
 #define APP_SAMPLE_QUEUE_LEN    (2 * APP_PUBLISH_INTERVAL_S / APP_SAMPLE_INTERVAL_S)
 
 /* Uplink to the broker: 1 = SIM7080G cellular modem (LTE-M) on UART1,

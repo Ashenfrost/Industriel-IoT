@@ -49,6 +49,11 @@ static struct urc_entry urcs[AT_MAX_URC];
 static size_t n_urc;
 static struct at_state st;
 
+/* Last error line from the modem ("+CME ERROR: ..." with AT+CMEE=2), so a
+ * failed command is logged with the reason, even when the caller passed no
+ * response buffer. Protected by st_mtx. */
+static char last_err[64];
+
 /* ------------------------------------------------------------------ */
 /* Hjælpere (kaldes med st_mtx låst)                                   */
 /* ------------------------------------------------------------------ */
@@ -152,6 +157,8 @@ static void process_line(const char *line)
 		}
 		if (is_error(line)) {
 			resp_append(line);
+			strncpy(last_err, line, sizeof(last_err) - 1);
+			last_err[sizeof(last_err) - 1] = '\0';
 			complete(-EIO);
 			goto out;
 		}
@@ -336,7 +343,9 @@ static int run(const char *cmd, const char *expect, char *resp, size_t resp_len,
 	send_line(cmd);
 	int ret = wait_done(timeout);
 
-	if (ret) {
+	if (ret == -EIO) {
+		LOG_WRN("'%s' -> %s", cmd, last_err);
+	} else if (ret) {
 		LOG_WRN("'%s' -> %d", cmd, ret);
 	}
 	k_mutex_unlock(&cmd_mtx);
@@ -430,7 +439,11 @@ int at_send_data(const char *cmd, const void *data, size_t len, k_timeout_t time
 		ret = wait_done(timeout);
 	}
 	if (ret) {
-		LOG_WRN("'%s' (%u bytes) -> %d", cmd, (unsigned int)len, ret);
+		if (ret == -EIO) {
+			LOG_WRN("'%s' (%u bytes) -> %s", cmd, (unsigned int)len, last_err);
+		} else {
+			LOG_WRN("'%s' (%u bytes) -> %d", cmd, (unsigned int)len, ret);
+		}
 	}
 	k_mutex_unlock(&cmd_mtx);
 	return ret;

@@ -35,14 +35,21 @@ typedef org_eclipse_tahu_protobuf_Payload        sp_payload_t;
 typedef org_eclipse_tahu_protobuf_Payload_Metric sp_metric_t;
 
 #define SP_DT_FLOAT   org_eclipse_tahu_protobuf_DataType_Float
+#define SP_DT_UINT16  org_eclipse_tahu_protobuf_DataType_UInt16
 #define SP_DT_UINT64  org_eclipse_tahu_protobuf_DataType_UInt64
 #define SP_DT_BOOLEAN org_eclipse_tahu_protobuf_DataType_Boolean
 
+#define TAG_INT     org_eclipse_tahu_protobuf_Payload_Metric_int_value_tag
 #define TAG_FLOAT   org_eclipse_tahu_protobuf_Payload_Metric_float_value_tag
 #define TAG_LONG    org_eclipse_tahu_protobuf_Payload_Metric_long_value_tag
 #define TAG_BOOLEAN org_eclipse_tahu_protobuf_Payload_Metric_boolean_value_tag
 
 #define MAX_METRICS (sizeof(((sp_payload_t *)0)->metrics) / sizeof(sp_metric_t))
+
+_Static_assert(MAX_METRICS == SPARKPLUG_MAX_METRICS,
+	       "SPARKPLUG_MAX_METRICS must match max_count in sparkplug_b.options");
+
+static const char *const position_names[SP_NUM_SENSORS] = SP_POSITION_NAMES;
 
 /* The payload struct is ~2.6 kB, so it is static instead of on the stack. */
 static sp_payload_t payload;
@@ -135,6 +142,73 @@ static int add_bdseq(uint64_t now_ms)
 	return 0;
 }
 
+static void set_null(sp_metric_t *m)
+{
+	m->has_is_null = true;
+	m->is_null = true;
+}
+
+/* Adds the SP_METRICS_PER_SAMPLE metrics of one sample.
+ * birth = true: with name and datatype (NBIRTH). s may then be NULL (nothing
+ * sampled yet): the metrics are declared with a null value.
+ * birth = false: alias only (NDATA); historical marks older buffered samples. */
+static int add_sample_metrics(const struct sparkplug_sample *s, uint64_t ts_ms,
+			      bool birth, bool historical)
+{
+	char name[24];
+
+	for (int kind = 0; kind < 2; kind++) {   /* 0 = temperature, 1 = humidity */
+		for (int i = 0; i < SP_NUM_SENSORS; i++) {
+			const char *what = kind ? "Humidity" : "Temperature";
+			uint64_t alias = (kind ? SP_ALIAS_HUM_BASE : SP_ALIAS_TEMP_BASE) + i;
+
+			if (birth) {
+				snprintf(name, sizeof(name), "%s/%s", position_names[i], what);
+			}
+			sp_metric_t *m = metric_add(birth ? name : NULL, alias, SP_DT_FLOAT, ts_ms);
+
+			if (!m) {
+				return -ENOMEM;
+			}
+			bool valid = s && s->plc_ok && !(s->plc_status & (1U << i));
+
+			if (valid) {
+				m->which_value = TAG_FLOAT;
+				m->value.float_value = kind ? s->humidity_pct[i] : s->temperature_c[i];
+			} else {
+				set_null(m);
+			}
+			if (!birth) {
+				m->has_datatype = false; /* declared in NBIRTH, saves 2 B */
+				if (historical) {
+					m->has_is_historical = true;
+					m->is_historical = true;
+				}
+			}
+		}
+	}
+
+	sp_metric_t *m = metric_add(birth ? SP_METRIC_PLC_STATUS : NULL, SP_ALIAS_PLC_STATUS,
+				    SP_DT_UINT16, ts_ms);
+	if (!m) {
+		return -ENOMEM;
+	}
+	if (s && s->plc_ok) {
+		m->which_value = TAG_INT;
+		m->value.int_value = s->plc_status;
+	} else {
+		set_null(m);
+	}
+	if (!birth) {
+		m->has_datatype = false;
+		if (historical) {
+			m->has_is_historical = true;
+			m->is_historical = true;
+		}
+	}
+	return 0;
+}
+
 int sparkplug_encode_ndeath(uint8_t *buf, size_t len)
 {
 	/* The Will is created now but published by the broker later, so the
@@ -168,47 +242,29 @@ int sparkplug_encode_nbirth(uint8_t *buf, size_t len, uint64_t now_ms,
 	m->which_value = TAG_BOOLEAN;
 	m->value.boolean_value = false;
 
-	m = metric_add(SP_METRIC_TEMPERATURE, SP_ALIAS_TEMPERATURE, SP_DT_FLOAT,
-		       latest ? latest->timestamp_ms : now_ms);
-	if (!m) {
+	/* Every data metric has to be declared in BIRTH, with the latest value
+	 * (or null if nothing has been sampled yet). */
+	if (add_sample_metrics(latest, latest ? latest->timestamp_ms : now_ms, true, false)) {
 		return -ENOMEM;
 	}
-	if (latest) {
-		m->which_value = TAG_FLOAT;
-		m->value.float_value = latest->temperature_c;
-	} else {
-		/* No reading yet: the metric still has to be declared in BIRTH. */
-		m->has_is_null = true;
-		m->is_null = true;
-	}
-
 	return payload_encode(buf, len);
 }
 
 int sparkplug_encode_ndata(uint8_t *buf, size_t len, uint64_t now_ms,
 			   const struct sparkplug_sample *samples, size_t count)
 {
-	if (count == 0 || count > MAX_METRICS) {
+	if (count == 0 || count > SPARKPLUG_MAX_SAMPLES_PER_NDATA) {
 		return -EINVAL;
 	}
 
 	payload_reset(now_ms, true);
 
 	for (size_t i = 0; i < count; i++) {
-		sp_metric_t *m = metric_add(NULL, SP_ALIAS_TEMPERATURE, SP_DT_FLOAT,
-					    samples[i].timestamp_ms);
-
-		m->which_value = TAG_FLOAT;
-		m->value.float_value = samples[i].temperature_c;
-		/* datatype was declared in NBIRTH; leaving it out saves 2 B/sample */
-		m->has_datatype = false;
-
-		if (i + 1 < count) {
-			m->has_is_historical = true;
-			m->is_historical = true;
+		if (add_sample_metrics(&samples[i], samples[i].timestamp_ms, false,
+				       i + 1 < count)) {
+			return -ENOMEM;
 		}
 	}
-
 	return payload_encode(buf, len);
 }
 
