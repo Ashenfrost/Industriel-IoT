@@ -1,0 +1,33 @@
+/* Pins from Thomas: UART1 TX=GPIO23, RX=GPIO22 -> SIM7080G (M5Stamp CatM) */
+#include <zephyr/dt-bindings/pinctrl/esp32c6-pinctrl.h>
+
+/ {
+	chosen {
+		zephyr,console = &usb_serial;
+		zephyr,shell-uart = &usb_serial;
+	};
+};
+
+&usb_serial {
+	status = "okay";
+};
+
+&pinctrl {
+	uart1_bridge: uart1_bridge {
+		group1 {
+			pinmux = <UART1_TX_GPIO23>;
+			output-high;
+		};
+		group2 {
+			pinmux = <UART1_RX_GPIO22>;
+			bias-pull-up;
+		};
+	};
+};
+
+&uart1 {
+	status = "okay";
+	current-speed = <115200>;
+	pinctrl-0 = <&uart1_bridge>;
+	pinctrl-names = "default";
+};
