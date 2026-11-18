@@ -209,6 +209,17 @@ python analyze.py model   --session results\test2.json --rest-ma 0.9 --battery-m
   strømmen mellem målinger, fx et test 4-tal for et design med søvn i stedet
   for test 2's "vågen"-tal. Uddata er markdown-tabeller, klar til rapporten.
 
+### Uden markører (`bins.py` + `segment.py`)
+
+Hvis logikkanalerne ikke blev optaget (alle D-kanaler 0), kan sessioner og
+søvnfaser findes ud fra strømmen. Se `results/RESULTS.md` for et eksempel:
+
+```powershell
+python bins.py rec.csv --bin 0.1 --out rec_b100ms.csv                       # gennemsnit pr. 0,1 s
+python segment.py sessions rec_b100ms.csv --threshold 90 --min-s 3 --gap-s 1  # test 1-3
+python segment.py phases   rec_b100ms.csv                                     # test 4
+```
+
 ## Fra målinger til design
 
 Med tallene kan gennemsnitsstrømmen for en hvilken som helst cyklus regnes ud:
