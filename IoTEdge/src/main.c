@@ -53,12 +53,18 @@ static void plc_sample(struct sparkplug_sample *s)
 #if APP_WIFI_ON_DEMAND
 	/* Wi-Fi only for this read: connect, read once, disconnect. The ESP
 	 * can light-sleep again as soon as network_down() is called. */
+	int64_t t_up = k_uptime_get();
 	int rc = network_up(APP_WIFI_CONNECT_TIMEOUT_S);
+	int64_t t_read = k_uptime_get();
 
 	if (rc == 0) {
 		rc = modbus_client_read_now(&r);
 	}
 	network_down();
+	/* How long Wi-Fi was needed for this sample: decides whether on-demand
+	 * Wi-Fi pays off at short sample intervals. */
+	LOG_INF("Wi-Fi up in %lld ms, read %lld ms (rc %d)", (long long)(t_read - t_up),
+		(long long)(k_uptime_get() - t_read), rc);
 	if (rc != 0) {
 		LOG_WRN("no Modbus data from SimPLC (%d)", rc);
 		return;
@@ -141,6 +147,7 @@ int main(void)
 	 * The MQTT thread batches and publishes, so a slow or broken network
 	 * never shifts the sampling interval. */
 	int64_t next = k_uptime_get();
+	bool first = true;
 
 	while (1) {
 		/* Stamped with uptime (replaced by the PLC read time when there is
@@ -152,6 +159,11 @@ int main(void)
 		/* Queued even without PLC data: the nulls show the gap in QuestDB */
 		mqtt_client_queue_sample(&s);
 		power_marker_set(PM_MARK_SAMPLE, false);
+		if (first) {
+			/* boot done: light sleep allowed from now on */
+			power_boot_done();
+			first = false;
+		}
 
 		next += APP_SAMPLE_INTERVAL_S * MSEC_PER_SEC;
 		k_sleep(K_TIMEOUT_ABS_MS(next));

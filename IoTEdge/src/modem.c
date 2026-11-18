@@ -495,10 +495,33 @@ int modem_mqtt_connect(void)
 	return 0;
 }
 
+/* Time for the last packets to leave after AT+SMDISC, before the caller
+ * takes the data connection down */
+/* Pause between two AT+SMPUB, and before a retry of a refused one */
+#define PUB_GAP_MS        200
+#define PUB_RETRY_MS      500
+
+#define DISC_FLUSH_MS     1000
+#define DISC_WAIT_MS      3000
+
 int modem_mqtt_disconnect(void)
 {
+	int64_t end;
+	int ret;
+
 	atomic_set(&mqtt_up, 0);
-	return at_send("AT+SMDISC", NULL, 0, K_MSEC(T_CONF_MS));
+	ret = at_send("AT+SMDISC", NULL, 0, K_MSEC(T_CONF_MS));
+
+	/* "OK" to AT+SMPUB/AT+SMDISC only means the modem has the data, not
+	 * that it went out. Taking PDP down right after (AT+CNACT=0) lost the
+	 * last NDATA and the DISCONNECT. Wait until the modem reports the MQTT
+	 * connection closed, then give TCP/TLS a moment to flush. */
+	end = k_uptime_get() + DISC_WAIT_MS;
+	while (k_uptime_get() < end && smstate_query() > 0) {
+		k_sleep(K_MSEC(200));
+	}
+	k_sleep(K_MSEC(DISC_FLUSH_MS));
+	return ret;
 }
 
 bool modem_mqtt_is_connected(void)
@@ -539,11 +562,29 @@ int modem_mqtt_publish(const char *topic, const void *payload, size_t len, int q
 	if (n < 0 || n >= (int)sizeof(cmd)) {
 		return -ENOMEM;
 	}
-	int ret = at_send_data(cmd, payload, len,
-			       K_MSEC(qos ? T_SMPUB_QOS12 : T_SMPUB_QOS0));
+	/* Back-to-back publishes (NBIRTH, then NDATA 10 ms later) were refused
+	 * with "+CME ERROR: operation not allowed" while the modem was still
+	 * sending the previous one: keep a gap, and retry once if refused. */
+	static int64_t last_pub_ms;
+	int ret = -EIO;
 
-	if (ret) {
-		smstate_query(); /* opdatér cached forbindelsesstatus */
+	for (int attempt = 0; attempt < 2; attempt++) {
+		int64_t gap = last_pub_ms + PUB_GAP_MS - k_uptime_get();
+
+		if (gap > 0) {
+			k_sleep(K_MSEC(gap));
+		}
+		ret = at_send_data(cmd, payload, len,
+				   K_MSEC(qos ? T_SMPUB_QOS12 : T_SMPUB_QOS0));
+		last_pub_ms = k_uptime_get();
+		if (ret == 0) {
+			break;
+		}
+		/* opdatér cached forbindelsesstatus; no retry if MQTT is gone */
+		if (smstate_query() <= 0) {
+			break;
+		}
+		k_sleep(K_MSEC(PUB_RETRY_MS));
 	}
 	return ret;
 }

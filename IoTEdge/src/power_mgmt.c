@@ -4,6 +4,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/init.h>
 
 LOG_MODULE_REGISTER(power_mgmt, LOG_LEVEL_INF);
 
@@ -38,6 +39,11 @@ int power_mgmt_init(void)
 	return 0;
 }
 
+void power_boot_done(void)
+{
+	power_unlock(PWR_BOOT);
+}
+
 void power_lock(enum power_reason r)
 {
 	K_SPINLOCK(&lock) {
@@ -65,13 +71,32 @@ void power_unlock(enum power_reason r)
 
 int power_mgmt_init(void)
 {
-#if defined(CONFIG_PM)
-	/* CONFIG_PM is on in prj.conf, but light sleep is not wanted (debug
-	 * build): hold one lock forever so the kernel never chooses it. */
-	pm_policy_state_lock_get(PM_STATE_STANDBY, PM_ALL_SUBSTATES);
-#endif
+	/* The boot lock (below) is never released: no light sleep at all */
 	LOG_INF("light sleep off (APP_LIGHT_SLEEP=0)");
 	return 0;
 }
 
+void power_boot_done(void)
+{
+}
+
 #endif /* APP_LIGHT_SLEEP */
+
+#if defined(CONFIG_PM)
+/* Block light sleep from the very start. With CONFIG_PM the idle thread may
+ * light-sleep as soon as all threads wait, which already happens while
+ * drivers start up, before main() runs. One such sleep kills the USB console
+ * for good (the rest of the firmware runs on), so a lock taken in main() was
+ * too late. Released by power_boot_done() with APP_LIGHT_SLEEP, kept for good
+ * without it. */
+static int power_boot_lock(void)
+{
+#if APP_LIGHT_SLEEP
+	power_lock(PWR_BOOT);
+#else
+	pm_policy_state_lock_get(PM_STATE_STANDBY, PM_ALL_SUBSTATES);
+#endif
+	return 0;
+}
+SYS_INIT(power_boot_lock, PRE_KERNEL_1, 0);
+#endif

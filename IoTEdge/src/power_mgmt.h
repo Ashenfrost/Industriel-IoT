@@ -34,6 +34,10 @@ enum power_reason {
  * as wakeup source; without it, it blocks light sleep for good. */
 int power_mgmt_init(void);
 
+/* Start-up is over (first sample queued): with APP_LIGHT_SLEEP, light sleep
+ * may begin. Light sleep is blocked from the first boot step until then. */
+void power_boot_done(void);
+
 #if APP_LIGHT_SLEEP
 void power_lock(enum power_reason r);
 void power_unlock(enum power_reason r);

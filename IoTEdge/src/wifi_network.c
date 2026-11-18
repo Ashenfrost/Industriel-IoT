@@ -130,7 +130,8 @@ bool network_is_connected(void)
 
 int network_up(int timeout_s)
 {
-	k_timeout_t until = K_TIMEOUT_ABS_MS(k_uptime_get() + timeout_s * 1000LL);
+	int64_t deadline = k_uptime_get() + timeout_s * 1000LL;
+	k_timeout_t until = K_TIMEOUT_ABS_MS(deadline);
 
 	if (!APP_WIFI_ON_DEMAND) {
 		/* always on: the supervisor keeps it up; just report */
@@ -138,22 +139,30 @@ int network_up(int timeout_s)
 	}
 	power_lock(PWR_WIFI);
 	atomic_set(&wanted, 1);
-	k_sem_give(&state_changed);           /* let the supervisor retry if needed */
 
 	if (network_is_connected()) {
 		return 0;
 	}
-	k_sem_reset(&wifi_connected_sem);
+	/* taken down by network_down() between samples */
+	net_if_up(iface);
 	k_sem_reset(&ipv4_ready_sem);
-	if (!atomic_get(&wifi_up)) {
-		int ret = request_connect();
+	/* Connect, and try again if an attempt fails at once (seen with phone
+	 * hotspots right after a disconnect) until the deadline. No supervisor
+	 * thread in on-demand mode, so nothing else competes for the link. */
+	while (!atomic_get(&wifi_up)) {
+		int64_t left = deadline - k_uptime_get();
 
-		if (ret) {
-			return ret;
-		}
-		if (k_sem_take(&wifi_connected_sem, until) != 0) {
+		if (left <= 0) {
 			LOG_WRN("Wi-Fi connect timeout");
 			return -ETIMEDOUT;
+		}
+		k_sem_reset(&state_changed);
+		if (request_connect() == 0) {
+			/* the next connect or disconnect event, whichever comes */
+			k_sem_take(&state_changed, K_MSEC(MIN(left, 10000)));
+		}
+		if (!atomic_get(&wifi_up)) {
+			k_sleep(K_MSEC(MIN(1000, MAX(deadline - k_uptime_get(), 0))));
 		}
 	}
 	/* After a reconnect the old DHCP address may still be there, so no new
@@ -182,7 +191,16 @@ void network_down(void)
 		if (ret && ret != -EALREADY) {
 			LOG_WRN("Wi-Fi disconnect request failed: %d", ret);
 		}
+		/* wait (briefly) for the disconnect to finish before taking the
+		 * interface down */
+		for (int i = 0; i < 20 && atomic_get(&wifi_up); i++) {
+			k_sleep(K_MSEC(100));
+		}
 	}
+	/* Interface down between samples: the light-sleep build hung with the
+	 * Wi-Fi driver up but disconnected. */
+	net_if_down(iface);
+	atomic_set(&ipv4_up, 0);
 	power_unlock(PWR_WIFI);
 }
 
@@ -203,7 +221,10 @@ int network_initialize(void)
 				     NET_EVENT_IPV4_ADDR_ADD);
 	net_mgmt_add_event_callback(&ipv4_cb);
 
-	net_if_up(iface);
+	/* On demand: the interface stays down until the first network_up() */
+	if (!APP_WIFI_ON_DEMAND) {
+		net_if_up(iface);
+	}
 
 	params.ssid = WIFI_SSID;
 	params.ssid_length = strlen(WIFI_SSID);
@@ -214,16 +235,18 @@ int network_initialize(void)
 	params.security = WIFI_SECURITY_TYPE_PSK;
 	params.mfp = WIFI_MFP_OPTIONAL;
 
+#if APP_WIFI_ON_DEMAND
+	/* Wi-Fi stays off until a sample calls network_up(), which also does
+	 * its own retries: no supervisor thread competing for the link. */
+	LOG_INF("Wi-Fi on demand (SSID %s): connects for each sample only", params.ssid);
+	ARG_UNUSED(supervisor_fn);
+	return 0;
+#endif
+
 	k_thread_create(&supervisor_data, supervisor_stack,
 			K_THREAD_STACK_SIZEOF(supervisor_stack), supervisor_fn,
 			NULL, NULL, NULL, 7, 0, K_NO_WAIT);
 	k_thread_name_set(&supervisor_data, "wifi_supervisor");
-
-#if APP_WIFI_ON_DEMAND
-	/* Wi-Fi stays off until a sample calls network_up() */
-	LOG_INF("Wi-Fi on demand (SSID %s): connects for each sample only", params.ssid);
-	return 0;
-#endif
 
 	/* Always on: Wi-Fi is wanted for good, and no light sleep while it is
 	 * (an associated ESP32 Wi-Fi link does not survive it). */
