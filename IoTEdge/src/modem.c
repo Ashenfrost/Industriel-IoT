@@ -222,6 +222,23 @@ int modem_init(const struct device *uart, const struct modem_cfg *c)
 	return 0;
 }
 
+int modem_radio_on(void)
+{
+	return at_send("AT+CFUN=1", NULL, 0, K_MSEC(T_PDP_MS));
+}
+
+int modem_radio_off(void)
+{
+	atomic_set(&mqtt_up, 0);
+	atomic_set(&pdp_up_flag, 0);
+	int ret = at_send("AT+CFUN=0", NULL, 0, K_MSEC(T_PDP_MS));
+
+	if (ret == 0) {
+		LOG_INF("radio slukket");
+	}
+	return ret;
+}
+
 int modem_attach(uint32_t timeout_ms)
 {
 	int64_t end = k_uptime_get() + timeout_ms;

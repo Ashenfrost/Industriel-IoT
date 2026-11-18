@@ -1,5 +1,7 @@
 #include "wifi_network.h"
 #include "wifi_creds.h"
+#include "app_config.h"
+#include "power_mgmt.h"
 
 #include <errno.h>
 #include <string.h>
@@ -30,6 +32,7 @@ static K_SEM_DEFINE(state_changed, 0, 1);
 
 static atomic_t wifi_up;    /* associated with the access point */
 static atomic_t ipv4_up;    /* and holding a DHCP address */
+static atomic_t wanted;     /* someone wants Wi-Fi up (always, or during a sample) */
 
 static struct net_if *iface;
 static struct wifi_connect_req_params params;
@@ -98,14 +101,16 @@ static void supervisor_fn(void *p1, void *p2, void *p3)
 	ARG_UNUSED(p3);
 
 	while (1) {
-		if (atomic_get(&wifi_up)) {
+		/* Connected, or not wanted right now (on-demand mode between
+		 * samples): nothing to do until something changes. */
+		if (atomic_get(&wifi_up) || !atomic_get(&wanted)) {
 			delay_s = RETRY_MIN_S;
-			k_sem_take(&state_changed, K_FOREVER); /* until a disconnect */
+			k_sem_take(&state_changed, K_FOREVER);
 			continue;
 		}
 
 		k_sleep(K_SECONDS(delay_s));
-		if (atomic_get(&wifi_up)) {
+		if (atomic_get(&wifi_up) || !atomic_get(&wanted)) {
 			continue;
 		}
 
@@ -121,6 +126,64 @@ static void supervisor_fn(void *p1, void *p2, void *p3)
 bool network_is_connected(void)
 {
 	return atomic_get(&wifi_up) && atomic_get(&ipv4_up);
+}
+
+int network_up(int timeout_s)
+{
+	k_timeout_t until = K_TIMEOUT_ABS_MS(k_uptime_get() + timeout_s * 1000LL);
+
+	if (!APP_WIFI_ON_DEMAND) {
+		/* always on: the supervisor keeps it up; just report */
+		return network_is_connected() ? 0 : -ENOTCONN;
+	}
+	power_lock(PWR_WIFI);
+	atomic_set(&wanted, 1);
+	k_sem_give(&state_changed);           /* let the supervisor retry if needed */
+
+	if (network_is_connected()) {
+		return 0;
+	}
+	k_sem_reset(&wifi_connected_sem);
+	k_sem_reset(&ipv4_ready_sem);
+	if (!atomic_get(&wifi_up)) {
+		int ret = request_connect();
+
+		if (ret) {
+			return ret;
+		}
+		if (k_sem_take(&wifi_connected_sem, until) != 0) {
+			LOG_WRN("Wi-Fi connect timeout");
+			return -ETIMEDOUT;
+		}
+	}
+	/* After a reconnect the old DHCP address may still be there, so no new
+	 * "address added" event comes: check before waiting for one. */
+	if (atomic_get(&ipv4_up) ||
+	    net_if_ipv4_get_global_addr(iface, NET_ADDR_PREFERRED) != NULL) {
+		atomic_set(&ipv4_up, 1);
+		return 0;
+	}
+	if (k_sem_take(&ipv4_ready_sem, until) != 0) {
+		LOG_WRN("DHCP timeout");
+		return -ETIMEDOUT;
+	}
+	return 0;
+}
+
+void network_down(void)
+{
+	if (!APP_WIFI_ON_DEMAND) {
+		return; /* always on: stays connected */
+	}
+	atomic_set(&wanted, 0);
+	if (atomic_get(&wifi_up)) {
+		int ret = net_mgmt(NET_REQUEST_WIFI_DISCONNECT, iface, NULL, 0);
+
+		if (ret && ret != -EALREADY) {
+			LOG_WRN("Wi-Fi disconnect request failed: %d", ret);
+		}
+	}
+	power_unlock(PWR_WIFI);
 }
 
 int network_initialize(void)
@@ -151,15 +214,25 @@ int network_initialize(void)
 	params.security = WIFI_SECURITY_TYPE_PSK;
 	params.mfp = WIFI_MFP_OPTIONAL;
 
-	LOG_INF("Connecting to Wi-Fi SSID: %s", params.ssid);
-
-	/* The supervisor takes over from here, whether this first attempt
-	 * works or not. */
 	k_thread_create(&supervisor_data, supervisor_stack,
 			K_THREAD_STACK_SIZEOF(supervisor_stack), supervisor_fn,
 			NULL, NULL, NULL, 7, 0, K_NO_WAIT);
 	k_thread_name_set(&supervisor_data, "wifi_supervisor");
 
+#if APP_WIFI_ON_DEMAND
+	/* Wi-Fi stays off until a sample calls network_up() */
+	LOG_INF("Wi-Fi on demand (SSID %s): connects for each sample only", params.ssid);
+	return 0;
+#endif
+
+	/* Always on: Wi-Fi is wanted for good, and no light sleep while it is
+	 * (an associated ESP32 Wi-Fi link does not survive it). */
+	atomic_set(&wanted, 1);
+	power_lock(PWR_WIFI);
+	LOG_INF("Connecting to Wi-Fi SSID: %s", params.ssid);
+
+	/* The supervisor takes over from here, whether this first attempt
+	 * works or not. */
 	ret = request_connect();
 	if (ret) {
 		return ret;

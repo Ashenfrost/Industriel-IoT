@@ -11,8 +11,11 @@
 #define SPARKPLUG_GROUP_ID "GRP1"
 #endif
 
-/* How often the sensor is read (kravspec Projekt A: 5-15 s). */
+/* How often the sensor is read (kravspec Projekt A: 5-15 s). Can be set at
+ * build time, e.g. -DAPP_SAMPLE_INTERVAL_S=600 for one sample per 10 min. */
+#ifndef APP_SAMPLE_INTERVAL_S
 #define APP_SAMPLE_INTERVAL_S   10
+#endif
 
 /* How often the node connects and sends everything it has collected
  * (option A: connect -> NBIRTH -> NDATA... -> NDEATH -> disconnect).
@@ -54,6 +57,32 @@
 #define APP_MQTT_TLS            1
 #endif
 #define APP_MQTT_TLS_PORT       8883
+
+/* ---- Power saving (see IoTEdge/tests/power/results/RESULTS.md) ---- */
+
+/* 1 = light sleep between work (CONFIG_PM). Measured: ESP idle 49 mA vs
+ * light sleep 17.8 mA (modem on) / 7.7 mA (modem radio off), whole system.
+ * The USB console stops after the first light sleep: use 0 to debug. */
+#ifndef APP_LIGHT_SLEEP
+#define APP_LIGHT_SLEEP         1
+#endif
+
+/* 1 = turn the modem's radio off (AT+CFUN=0) between sessions and back on
+ * at the start of the next one. Saves ~8-10 mA for ~0.4 C per re-attach. */
+#ifndef APP_MODEM_RADIO_OFF
+#define APP_MODEM_RADIO_OFF     1
+#endif
+
+/* 1 = Wi-Fi only on for each sample (connect, read the SimPLC, disconnect),
+ * so the ESP can sleep in between. 0 = Wi-Fi stays connected (no light
+ * sleep while it is up). Default: on demand when samples are >= 60 s apart;
+ * re-connecting every 10 s is unmeasured and phone hotspots dislike it. */
+#ifndef APP_WIFI_ON_DEMAND
+#define APP_WIFI_ON_DEMAND      (APP_SAMPLE_INTERVAL_S >= 60)
+#endif
+/* Max time for one on-demand Wi-Fi connect + DHCP before the sample is
+ * given up (sent as null). */
+#define APP_WIFI_CONNECT_TIMEOUT_S 20
 
 /* ---- Power measurement switches (PPK2 tests, see IoTEdge/tests/power) ---- */
 

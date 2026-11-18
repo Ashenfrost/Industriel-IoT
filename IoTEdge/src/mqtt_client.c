@@ -37,6 +37,7 @@
 #include "time_sync.h"
 #include "app_config.h"
 #include "power_marker.h"
+#include "power_mgmt.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
@@ -129,17 +130,41 @@ static int uplink_init(void)
 	return 0;
 }
 
+/* Ends every session (clean or not): data connection down and, with
+ * APP_MODEM_RADIO_OFF, the radio off until the next session. Then light
+ * sleep is allowed again. */
+static void uplink_shutdown(void)
+{
+	if (modem_ready) {
+		(void)modem_pdp_down();
+#if APP_MODEM_RADIO_OFF
+		(void)modem_radio_off();
+#endif
+	}
+	power_unlock(PWR_UPLINK);
+}
+
 static int uplink_open(void)
 {
 	int ret;
 
+	/* UART traffic to the modem for the whole session: no light sleep */
+	power_lock(PWR_UPLINK);
+
 	if (!modem_ready) {
+		/* modem_init() also turns the radio on (AT+CFUN=1) */
 		ret = modem_init(DEVICE_DT_GET(DT_NODELABEL(uart1)), &modem_cfg);
 		if (ret) {
 			LOG_ERR("modem init failed: %d", ret);
 			return ret;
 		}
 		modem_ready = true;
+	} else if (APP_MODEM_RADIO_OFF) {
+		ret = modem_radio_on();
+		if (ret) {
+			LOG_ERR("radio on failed: %d", ret);
+			return ret;
+		}
 	}
 	ret = modem_attach(APP_MODEM_ATTACH_MS);
 	if (ret) {
@@ -180,18 +205,18 @@ static int uplink_close(void)
 {
 	int ret = modem_mqtt_disconnect();
 
-	/* Option A: no data connection between sessions */
-	(void)modem_pdp_down();
+	/* Option A: no data connection (and no radio) between sessions */
+	uplink_shutdown();
 	return ret;
 }
 
 static void uplink_abort(void)
 {
-	if (!modem_ready) {
-		return; /* modem never answered: nothing to tear down, only timeouts */
+	if (modem_ready) {
+		/* (if the modem never answered there is nothing to tear down) */
+		(void)modem_mqtt_disconnect();
 	}
-	(void)modem_mqtt_disconnect();
-	(void)modem_pdp_down();
+	uplink_shutdown();
 }
 
 /* ------------------------------------------------------------------ */

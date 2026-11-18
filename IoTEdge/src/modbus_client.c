@@ -2,6 +2,7 @@
 #include "modbus_client.h"
 #include "modbus_settings.h"
 #include "power_marker.h"
+#include "app_config.h"
 
 #include <errno.h>
 #include <string.h>
@@ -25,8 +26,10 @@ static K_MUTEX_DEFINE(data_lock);   /* protects latest */
 static struct modbus_readings latest;
 static bool latest_valid;
 
+#if !APP_WIFI_ON_DEMAND
 static K_THREAD_STACK_DEFINE(poll_stack, POLL_STACK_SIZE);
 static struct k_thread poll_thread_data;
+#endif
 
 static void sock_close(void)
 {
@@ -197,6 +200,7 @@ static void store_readings(const uint16_t *regs)
 	k_mutex_unlock(&data_lock);
 }
 
+#if !APP_WIFI_ON_DEMAND
 static void poll_fn(void *p1, void *p2, void *p3)
 {
 	uint16_t regs[MODBUS_REG_COUNT];
@@ -232,6 +236,32 @@ static void poll_fn(void *p1, void *p2, void *p3)
 
 		k_sleep(K_MSEC(wait > 0 ? wait : 0));
 	}
+}
+#endif /* !APP_WIFI_ON_DEMAND */
+
+int modbus_client_read_now(struct modbus_readings *out)
+{
+	uint16_t regs[MODBUS_REG_COUNT];
+	int rc;
+
+	power_marker_set(PM_MARK_MODBUS, true);
+	k_mutex_lock(&txn_lock, K_FOREVER);
+	rc = connect_locked();
+	if (rc == 0) {
+		rc = modbus_read_holding_regs(iface, MODBUS_UNIT_ID, MODBUS_REG_START,
+					      regs, MODBUS_REG_COUNT);
+	}
+	/* Wi-Fi goes down right after this: don't keep a TCP socket around */
+	sock_close();
+	k_mutex_unlock(&txn_lock);
+	power_marker_set(PM_MARK_MODBUS, false);
+
+	if (rc) {
+		LOG_WRN("Modbus read failed: %d", rc);
+		return rc;
+	}
+	store_readings(regs);
+	return modbus_client_get_readings(out);
 }
 
 int modbus_client_get_readings(struct modbus_readings *out)
@@ -282,8 +312,13 @@ int modbus_client_initialize(void)
 		return rc;
 	}
 
+#if APP_WIFI_ON_DEMAND
+	/* Wi-Fi is only up during a sample: main reads with
+	 * modbus_client_read_now() instead of a background poll. */
+#else
 	k_thread_create(&poll_thread_data, poll_stack, K_THREAD_STACK_SIZEOF(poll_stack),
 			poll_fn, NULL, NULL, NULL, 6, 0, K_NO_WAIT);
 	k_thread_name_set(&poll_thread_data, "modbus_poll");
+#endif
 	return 0;
 }

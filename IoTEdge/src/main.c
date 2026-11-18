@@ -8,6 +8,7 @@
 #include "time_sync.h"
 #include "modbus_client.h"
 #include "power_marker.h"
+#include "power_mgmt.h"
 
 LOG_MODULE_REGISTER(app, LOG_LEVEL_INF);
 
@@ -49,10 +50,25 @@ static void plc_sample(struct sparkplug_sample *s)
 	struct modbus_readings r;
 
 	s->plc_ok = false;
+#if APP_WIFI_ON_DEMAND
+	/* Wi-Fi only for this read: connect, read once, disconnect. The ESP
+	 * can light-sleep again as soon as network_down() is called. */
+	int rc = network_up(APP_WIFI_CONNECT_TIMEOUT_S);
+
+	if (rc == 0) {
+		rc = modbus_client_read_now(&r);
+	}
+	network_down();
+	if (rc != 0) {
+		LOG_WRN("no Modbus data from SimPLC (%d)", rc);
+		return;
+	}
+#else
 	if (modbus_client_get_readings(&r) != 0) {
 		LOG_WRN("no Modbus data from SimPLC");
 		return;
 	}
+#endif
 	if (k_uptime_get() - r.timestamp_ms > PLC_MAX_AGE_MS) {
 		LOG_WRN("Modbus data is %lld ms old", (long long)(k_uptime_get() - r.timestamp_ms));
 		return;
@@ -84,6 +100,10 @@ static void plc_sample(struct sparkplug_sample *s)
 int main(void)
 {
 	LOG_INF("Zephyr app started");
+	LOG_INF("sample every %d s, publish every %d s, light sleep %d, Wi-Fi on demand %d, "
+		"modem radio off %d", APP_SAMPLE_INTERVAL_S, APP_PUBLISH_INTERVAL_S,
+		APP_LIGHT_SLEEP, APP_WIFI_ON_DEMAND, APP_MODEM_RADIO_OFF);
+	power_mgmt_init();
 	power_marker_init();
 
 	build_client_id_initialize();

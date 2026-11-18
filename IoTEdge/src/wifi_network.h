@@ -11,3 +11,12 @@ int network_initialize(void);
 
 /* True while Wi-Fi is connected and an IPv4 address is held. */
 bool network_is_connected(void);
+
+/* On demand (APP_WIFI_ON_DEMAND): connect and wait for an IPv4 address,
+ * at most timeout_s. Blocks light sleep until network_down(). Always call
+ * network_down() afterwards, also when this fails. Harmless in always-on
+ * mode (returns at once when already connected). */
+int network_up(int timeout_s);
+
+/* On demand: disconnect again and allow light sleep. */
+void network_down(void);

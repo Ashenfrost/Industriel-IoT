@@ -21,6 +21,12 @@
     status = "okay";
 };
 
+/* RTC timer wakes the chip from light sleep (power_mgmt.c) */
+&rtc_timer {
+    status = "okay";
+    wakeup-source;
+};
+
 &coretemp {
     status = "okay";
     range-min = <(-10)>;
