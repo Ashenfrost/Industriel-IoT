@@ -48,6 +48,20 @@
 #if APP_UPLINK_CELLULAR
 #include "modem.h"
 #include "mqtt_ca_cert.h"
+/* mTLS (IEC 62443 CR 3.8): this device's client certificate and private key.
+ * Secret, so it is not in git: make it from the PEM files with
+ *   python tools/scripts/pem2h.py src/mqtt_client_cert.h \
+ *       MQTT_CLIENT_CERT_PEM=<device>.crt MQTT_CLIENT_KEY_PEM=<device>.key
+ * The broker requires it on 8883 and uses its CN as the MQTT username. */
+#if __has_include("mqtt_client_cert.h")
+#include "mqtt_client_cert.h"
+#elif APP_MQTT_TLS && !defined(APP_ALLOW_INSECURE)
+#error "src/mqtt_client_cert.h missing: the broker requires a client certificate"
+#endif
+#ifndef MQTT_CLIENT_CERT_PEM
+#define MQTT_CLIENT_CERT_PEM ""
+#define MQTT_CLIENT_KEY_PEM  ""
+#endif
 #include <zephyr/device.h>
 #else
 #include <zephyr/net/mqtt.h>
@@ -125,6 +139,8 @@ static int uplink_init(void)
 		.clean_session = true,          /* Sparkplug requires clean session */
 		.tls = APP_MQTT_TLS,
 		.ca_cert_pem = MQTT_CA_CERT_PEM,
+		.client_cert_pem = MQTT_CLIENT_CERT_PEM,
+		.client_key_pem = MQTT_CLIENT_KEY_PEM,
 	};
 	/* Zephyr's SNTP can't reach the network through the modem */
 	time_sync_set_source(modem_time_source);

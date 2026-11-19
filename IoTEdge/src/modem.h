@@ -34,6 +34,10 @@ struct modem_cfg {
 	 * med tls = true giver -EACCES: der forbindes aldrig uden certifikat-tjek. */
 	bool tls;
 	const char *ca_cert_pem;
+	/* mTLS: klientcertifikat og privat nøgle i PEM. NULL eller "" = intet
+	 * klientcertifikat (brokeren afviser så, hvis den kræver et). */
+	const char *client_cert_pem;
+	const char *client_key_pem;
 };
 
 /*
