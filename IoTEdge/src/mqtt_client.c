@@ -50,8 +50,12 @@
 #include "mqtt_ca_cert.h"
 /* mTLS (IEC 62443 CR 3.8): this device's client certificate and private key.
  * Secret, so it is not in git: make it from the PEM files with
+ *   openssl rsa -in <device>.key -traditional -out <device>.pkcs1.key
  *   python tools/scripts/pem2h.py src/mqtt_client_cert.h \
- *       MQTT_CLIENT_CERT_PEM=<device>.crt MQTT_CLIENT_KEY_PEM=<device>.key
+ *       MQTT_CLIENT_CERT_PEM=<device>.crt MQTT_CLIENT_KEY_PEM=<device>.pkcs1.key
+ * The SIM7080G needs the key as PKCS#1 ("BEGIN RSA PRIVATE KEY"). With a
+ * PKCS#8 key ("BEGIN PRIVATE KEY") it sends a broken certificate and the
+ * broker logs "asn1 ... sequence length mismatch".
  * The broker requires it on 8883 and uses its CN as the MQTT username. */
 #if __has_include("mqtt_client_cert.h")
 #include "mqtt_client_cert.h"

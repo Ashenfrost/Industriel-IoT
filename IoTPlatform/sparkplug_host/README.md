@@ -69,25 +69,36 @@ Give the host its own broker user:
 docker compose exec mosquitto mosquitto_passwd /mosquitto/config/passwd_file sparkplug-host
 ```
 
-## Mosquitto ACL (recommended)
+## Mosquitto: mTLS and ACL (IEC 62443-4-2 CR 3.8)
 
-`acl_file /mosquitto/config/acl` in `mosquitto.conf`, then:
+The broker config running on the VPS is in
+[`../mosquitto/mosquitto.conf`](../mosquitto/mosquitto.conf) and
+[`../mosquitto/acl`](../mosquitto/acl) (no secrets in either):
+
+* **1883** is only for sparkplug-host on the compose network (password
+  login). It is not mapped to the VPS in `docker-compose.yml`, so it can't
+  be reached from the internet.
+* **8883** requires TLS 1.2+ **and a client certificate** signed by the UCL
+  IoT Group CA (`require_certificate true`). The certificate's CN is the
+  MQTT username (`use_identity_as_username true`), so every Edge has its own
+  identity, `device-<mac>`, and any username/password it sends is ignored.
+* **ACL:** an Edge may only publish `NBIRTH`/`NDATA`/`NDEATH` on its own
+  node topic (`%u` = its CN) and read its own `NCMD`. sparkplug-host reads
+  everything and may only write `NCMD`. The Will (NDEATH) is published by
+  the broker on behalf of the client, and still has to pass the client's
+  write ACL. That is why NDEATH is in the list.
+
+New Edge certificate (CA key stays offline on the PC that holds it):
 
 ```
-# Edge nodes may only publish their own node messages and read their NCMD.
-# %c = MQTT client id (the firmware uses device-<mac> as client id and node id)
-pattern write spBv1.0/+/NBIRTH/%c
-pattern write spBv1.0/+/NDATA/%c
-pattern write spBv1.0/+/NDEATH/%c
-pattern read  spBv1.0/+/NCMD/%c
-
-user sparkplug-host
-topic read  spBv1.0/#
-topic write spBv1.0/+/NCMD/#
+openssl req -new -newkey rsa:2048 -nodes -keyout device-<mac>.key -out device-<mac>.csr -subj "/CN=device-<mac>/O=UCL Industriel IoT"
+openssl x509 -req -in device-<mac>.csr -CA ca.crt -CAkey ca.key -CAserial ca.srl -out device-<mac>.crt -days 730 -sha256 -extfile client_ext.cnf
 ```
 
-The Will (NDEATH) is published by the broker on behalf of the client, and
-still has to pass the client's write ACL. That is why NDEATH is in the list.
+with `client_ext.cnf`: `basicConstraints = critical, CA:FALSE`,
+`keyUsage = critical, digitalSignature, keyEncipherment`,
+`extendedKeyUsage = clientAuth`. The firmware side (PKCS#1 key, header) is
+described in `IoTEdge/src/mqtt_client.c`.
 
 ## Testing without the ESP32
 

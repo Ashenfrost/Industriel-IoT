@@ -1,0 +1,14 @@
+# Mosquitto ACL (IEC 62443-4-2 CR 3.8 / CR 2.1). Anything not listed is denied.
+
+# sparkplug-host: reads all Sparkplug traffic, may only send node commands.
+user sparkplug-host
+topic read spBv1.0/#
+topic write spBv1.0/+/NCMD/#
+
+# Every Edge (username = CN of its client certificate): only its own node
+# topics. A device can't publish data or a death certificate for another one.
+# The broker publishes the Will in the client's name, so NDEATH is included.
+pattern write spBv1.0/GRP1/NBIRTH/%u
+pattern write spBv1.0/GRP1/NDATA/%u
+pattern write spBv1.0/GRP1/NDEATH/%u
+pattern read spBv1.0/GRP1/NCMD/%u
