@@ -8,8 +8,10 @@
  *       "MIID...\n" \
  *       "-----END CERTIFICATE-----\n"
  *
- * Empty = TLS without checking the server's certificate. The traffic is
- * still encrypted, but a fake broker would not be detected.
+ * Empty = the modem refuses to connect (modem.c, tls_configure()): TLS
+ * without checking the server's certificate would not detect a fake broker
+ * (IEC 62443 CR 3.1/3.8). A test build can define MQTT_CA_CERT_PEM itself,
+ * e.g. a wrong CA via EXTRA_CFLAGS="-include wrong_ca.h", to show that.
  *
  * The broker's certificate (CN and SAN = the broker IP, valid 2 years) is
  * signed by this CA. When it expires, sign a new one with the same CA: the
@@ -20,6 +22,7 @@
 
 /* UCL IoT Group CA (RSA 2048, valid to 2036-11-08). Signs the broker's
  * certificate for its TLS port (8883). The CA's private key is kept offline. */
+#ifndef MQTT_CA_CERT_PEM
 #define MQTT_CA_CERT_PEM \
     "-----BEGIN CERTIFICATE-----\n" \
     "MIIDQDCCAiigAwIBAgIUW+Hniwuko8MKF/QFyfWHhj49lTYwDQYJKoZIhvcNAQEL\n" \
@@ -42,4 +45,5 @@
     "+Q6Oc/AkPvfHzaz1cPATl+xUgP0=\n" \
     "-----END CERTIFICATE-----\n" \
     ""
+#endif
 

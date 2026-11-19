@@ -41,7 +41,8 @@
 /* Uplink to the broker: 1 = SIM7080G cellular modem (LTE-M) on UART1,
  * 0 = Wi-Fi with Zephyr's own MQTT client. Wi-Fi is started either way,
  * because Modbus TCP to the SimPLC runs over the local Wi-Fi.
- * Override with -DEXTRA_CFLAGS=-DAPP_UPLINK_CELLULAR=0 */
+ * Override with -DEXTRA_CFLAGS="-DAPP_UPLINK_CELLULAR=0 -DAPP_ALLOW_INSECURE"
+ * (test only: the Wi-Fi uplink has no TLS). */
 #ifndef APP_UPLINK_CELLULAR
 #define APP_UPLINK_CELLULAR     1
 #endif
@@ -52,11 +53,21 @@
 /* MQTT over TLS (issue #22). Cellular uplink only: TLS runs inside the
  * modem. The broker's TLS listener is on APP_MQTT_TLS_PORT; the CA its
  * certificate is checked against lives in mqtt_ca_cert.h.
- * Override with -DEXTRA_CFLAGS=-DAPP_MQTT_TLS=0 for plain MQTT on 1883. */
+ * Override with -DEXTRA_CFLAGS="-DAPP_MQTT_TLS=0 -DAPP_ALLOW_INSECURE" for
+ * plain MQTT on 1883 (test only). */
 #ifndef APP_MQTT_TLS
 #define APP_MQTT_TLS            1
 #endif
 #define APP_MQTT_TLS_PORT       8883
+
+/* IEC 62443 CR 3.1/3.8: never send without a verified server. Plain MQTT
+ * (APP_MQTT_TLS = 0) and the Wi-Fi uplink (no TLS at all) are test builds
+ * only, so they must be asked for on purpose with -DAPP_ALLOW_INSECURE.
+ * Without the CA in mqtt_ca_cert.h the modem refuses to connect
+ * (modem.c, tls_configure()). */
+#if (!APP_MQTT_TLS || !APP_UPLINK_CELLULAR) && !defined(APP_ALLOW_INSECURE)
+#error "Uplink without verified TLS: build with -DAPP_ALLOW_INSECURE (test only)"
+#endif
 
 /* ---- Power saving (see IoTEdge/tests/power/results/RESULTS.md) ---- */
 

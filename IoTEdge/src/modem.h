@@ -30,8 +30,8 @@ struct modem_cfg {
 	const char *password;
 	uint16_t keepalive_s;     /* 0 = 60 */
 	bool clean_session;
-	/* TLS inde i modemet (TLS 1.2). ca_cert_pem = brokerens CA i PEM; NULL eller ""
-	 * = krypteret, men serverens certifikat tjekkes ikke. */
+	/* TLS inde i modemet (TLS 1.2). ca_cert_pem = brokerens CA i PEM. NULL eller ""
+	 * med tls = true giver -EACCES: der forbindes aldrig uden certifikat-tjek. */
 	bool tls;
 	const char *ca_cert_pem;
 };

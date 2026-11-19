@@ -393,7 +393,13 @@ static int tls_configure(void)
 	if (!cfg->tls) {
 		return at_send("AT+SMSSL=0", NULL, 0, K_MSEC(T_CONF_MS));
 	}
-	if (verify && !ca_uploaded) {
+	/* IEC 62443 CR 3.1/3.8: TLS uden certifikat-tjek giver ingen sikkerhed
+	 * mod man-in-the-middle, så vi forbinder slet ikke uden CA. */
+	if (!verify) {
+		LOG_ERR("TLS: ingen CA sat, afviser at forbinde");
+		return -EACCES;
+	}
+	if (!ca_uploaded) {
 		ret = upload_ca(cfg->ca_cert_pem);
 		if (ret) {
 			return ret;
@@ -411,10 +417,7 @@ static int tls_configure(void)
 			return ret;
 		}
 	}
-	if (!verify) {
-		LOG_WRN("TLS uden certifikat-tjek (ingen CA sat)");
-	}
-	return cmdf(T_CONF_MS, NULL, 0, "AT+SMSSL=1,\"%s\",\"\"", verify ? CA_FILE : "");
+	return cmdf(T_CONF_MS, NULL, 0, "AT+SMSSL=1,\"%s\",\"\"", CA_FILE);
 }
 
 static int sub_at(const char *topic, int qos)
