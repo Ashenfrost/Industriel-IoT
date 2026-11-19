@@ -5,6 +5,7 @@ project(zephyr_CellCom_app)
 
 target_sources(app PRIVATE
     src/at_parser.c
+    src/bdseq_store.c
     src/client_id.c
     src/ESP32_temperature.c
     src/main.c

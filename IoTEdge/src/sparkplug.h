@@ -81,6 +81,13 @@ int sparkplug_build_topic(enum sparkplug_msg_type type, const char *node_id,
  * Call once before every mqtt_connect(), then encode the NDEATH Will. */
 void sparkplug_begin_session(void);
 
+/* bdSeq of the current (or last) session, to persist it. */
+uint8_t sparkplug_get_bdseq(void);
+
+/* Continues from a bdSeq saved before a reboot: the next
+ * sparkplug_begin_session() uses last + 1 instead of starting at 0. */
+void sparkplug_restore_bdseq(uint8_t last);
+
 /* The encoders return the number of bytes written, or a negative errno. */
 
 /* NDEATH: registered as MQTT Will at connect. Contains only bdSeq. */

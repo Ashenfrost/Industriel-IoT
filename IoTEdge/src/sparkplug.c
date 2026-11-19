@@ -4,7 +4,8 @@
  *  - seq:   0 in NBIRTH, +1 for every following NDATA, wraps 255 -> 0.
  *           NDEATH carries no seq.
  *  - bdSeq: same value in the NDEATH Will and the NBIRTH of one session,
- *           +1 for every new MQTT session (wraps 255 -> 0).
+ *           +1 for every new MQTT session (wraps 255 -> 0). The caller
+ *           persists it (bdseq_store.c) so it survives reboots.
  *  - NBIRTH must contain every metric (name + alias + datatype) and the
  *           "Node Control/Rebirth" boolean so a host can request a rebirth.
  *  - NDATA  uses aliases only, which keeps the payload small.
@@ -81,6 +82,17 @@ void sparkplug_begin_session(void)
 	} else {
 		bd_seq++; /* uint8_t wraps 255 -> 0 by itself */
 	}
+}
+
+uint8_t sparkplug_get_bdseq(void)
+{
+	return bd_seq;
+}
+
+void sparkplug_restore_bdseq(uint8_t last)
+{
+	bd_seq = last;
+	first_session = false;
 }
 
 static void payload_reset(uint64_t now_ms, bool with_seq)

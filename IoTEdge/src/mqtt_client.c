@@ -3,7 +3,7 @@
  * "Option A": the node is only connected while it has something to send.
  * Every APP_PUBLISH_INTERVAL_S the MQTT thread runs one short session:
  *
- *   1. sparkplug_begin_session()        -> new bdSeq
+ *   1. begin_session()                  -> new bdSeq, saved in flash
  *   2. CONNECT (clean session)
  *   3. CONNACK -> NBIRTH (seq 0)
  *   4. all queued samples as NDATA
@@ -34,6 +34,7 @@
 #include "mqtt_client.h"
 #include "mqtt_settings.h"
 #include "client_id.h"
+#include "bdseq_store.h"
 #include "time_sync.h"
 #include "app_config.h"
 #include "power_marker.h"
@@ -547,13 +548,44 @@ static int publish_ndata_chunk(void)
 	return (int)n;
 }
 
+/* Continues bdSeq from flash, so a reboot doesn't start over at 0 */
+static void restore_bdseq(void)
+{
+	uint8_t last;
+	int ret = bdseq_store_load(&last);
+
+	if (ret == 0) {
+		sparkplug_restore_bdseq(last);
+		LOG_INF("bdSeq restored from flash: last %u", last);
+	} else if (ret == -ENOENT) {
+		LOG_INF("No saved bdSeq (new device), starting at 0");
+	} else {
+		LOG_ERR("bdSeq load failed (%d), starting at 0", ret);
+	}
+}
+
+/* New session: new bdSeq, saved BEFORE connecting. If the node dies during
+ * the session, the next one still gets a new bdSeq (CR 3.8). A failed
+ * connect leaves a gap in the sequence, which the host allows. If the save
+ * fails the session still runs; the host flags a repeated bdSeq. */
+static void begin_session(void)
+{
+	sparkplug_begin_session();
+
+	int ret = bdseq_store_save(sparkplug_get_bdseq());
+
+	if (ret) {
+		LOG_ERR("bdSeq %u not saved: %d", sparkplug_get_bdseq(), ret);
+	}
+}
+
 /* One complete option A session. On any error the connection is aborted
  * and unsent samples stay queued. */
 static int run_session(void)
 {
-	/* New session: new bdSeq. The same NDEATH bytes are used as the Will
-	 * (Wi-Fi) and as our own NDEATH at the end of the session. */
-	sparkplug_begin_session();
+	/* The same NDEATH bytes are used as the Will (Wi-Fi) and as our own
+	 * NDEATH at the end of the session. */
+	begin_session();
 	ndeath_len = sparkplug_encode_ndeath(ndeath_buf, sizeof(ndeath_buf));
 	if (ndeath_len < 0) {
 		return ndeath_len;
@@ -608,7 +640,7 @@ static void persistent_loop(void)
 
 	while (1) {
 		if (!up) {
-			sparkplug_begin_session();
+			begin_session();
 			ndeath_len = sparkplug_encode_ndeath(ndeath_buf, sizeof(ndeath_buf));
 			power_marker_set(PM_MARK_SESSION, true);
 			up = (uplink_open() == 0 && publish_nbirth() == 0);
@@ -652,6 +684,7 @@ static void mqtt_thread_fn(void *p1, void *p2, void *p3)
 		APP_UPLINK_CELLULAR && APP_MQTT_TLS ? " + TLS" : "");
 
 	uplink_init();
+	restore_bdseq();
 
 #if APP_PERSISTENT_SESSION
 	LOG_WRN("APP_PERSISTENT_SESSION: staying connected, no batching (power baseline)");
