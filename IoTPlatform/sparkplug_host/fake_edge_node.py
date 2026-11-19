@@ -9,6 +9,11 @@ and every --cycle seconds runs one short session:
     python fake_edge_node.py ... --skip-seq 2    # lose a seq -> host warns
     python fake_edge_node.py ... --die 2         # 2nd session dies mid-way
                                                  # (broker publishes the Will)
+    python fake_edge_node.py ... --die 2 --no-will
+                                  # like the cellular modem: no Will, so the
+                                  # host must time the node out (CR 3.8)
+    python fake_edge_node.py ... --bdseq-start 5 # run twice: the 2nd run
+                                  # replays bdSeq 5 -> host rejects it (CR 3.8)
 
 Needs: pip install paho-mqtt protobuf grpcio-tools, then
 python -m grpc_tools.protoc -I ../../IoTEdge/proto --python_out=. ../../IoTEdge/proto/sparkplug_b.proto
@@ -35,7 +40,7 @@ class FakeNode:
     def __init__(self, args):
         self.a = args
         self.seq = 0
-        self.bd_seq = -1
+        self.bd_seq = args.bdseq_start - 1  # session() bumps it first
         self.base = f"spBv1.0/{args.group}"
         self.queue = []          # (timestamp_ms, temperature)
         self.last = None
@@ -87,7 +92,8 @@ class FakeNode:
                         protocol=mqtt.MQTTv311, clean_session=True)
         if a.username:
             c.username_pw_set(a.username, a.password)
-        c.will_set(self.topic("NDEATH"), self.ndeath(), qos=1, retain=False)
+        if not a.no_will:
+            c.will_set(self.topic("NDEATH"), self.ndeath(), qos=1, retain=False)
         c.connect(a.host, a.port, keepalive=a.keepalive)
         c.loop_start()
 
@@ -145,6 +151,10 @@ def main():
     ap.add_argument("--keepalive", type=int, default=5)
     ap.add_argument("--skip-seq", type=int, default=0)
     ap.add_argument("--die", type=int, default=0, help="session number to die in")
+    ap.add_argument("--no-will", action="store_true",
+                    help="no MQTT Will, like the SIM7080G uplink")
+    ap.add_argument("--bdseq-start", type=int, default=0,
+                    help="bdSeq of the first session (0..255)")
     FakeNode(ap.parse_args()).run()
 
 

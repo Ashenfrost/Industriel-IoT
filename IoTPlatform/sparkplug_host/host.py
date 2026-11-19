@@ -9,6 +9,16 @@ Subscribes to spBv1.0/<group>/# and does what a Sparkplug "host" must do:
   * a gap in seq, or data from a node we never saw a birth from, makes us
     send NCMD "Node Control/Rebirth" = true
 
+Session integrity (IEC 62443-4-2 CR 3.8):
+  * an NBIRTH must carry a bdSeq NEWER than the node's last one (1..127 steps
+    ahead, mod 256; gaps are fine because a failed connect skips a value).
+    The same or an older bdSeq looks like a replayed session: it is logged,
+    stored as a REJECTED event, and its data is dropped until a valid NBIRTH.
+  * the cellular modem can't register NDEATH as MQTT Will, so a node that
+    dies mid-session would stay "online" forever. A node silent for longer
+    than NODE_TIMEOUT_S is marked offline (TIMEOUT event); its next data must
+    start with a new NBIRTH.
+
 Configuration is environment variables only (see README.md).
 """
 
@@ -17,6 +27,7 @@ import os
 import signal
 import ssl
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 
@@ -30,6 +41,8 @@ NAMESPACE = "spBv1.0"
 REBIRTH_METRIC = "Node Control/Rebirth"
 DT_BOOLEAN = 11
 REBIRTH_MIN_INTERVAL_S = 30  # don't flood a node that keeps misbehaving
+BDSEQ_MAX_AHEAD = 127  # half of the 0..255 range counts as "newer"
+TIMEOUT_CHECK_S = 30
 
 METRICS_TABLE = "sparkplug_metrics"
 EVENTS_TABLE = "sparkplug_events"
@@ -42,6 +55,11 @@ class NodeState:
     bd_seq: int | None = None
     online: bool = False
     last_rebirth_req: float = 0.0
+    # Last accepted bdSeq. Unlike bd_seq it survives NDEATH, so a later
+    # NBIRTH can be checked against it. None until the first birth we see.
+    last_bd_seq: int | None = None
+    rejected: bool = False  # current session failed the bdSeq check
+    last_seen: float = 0.0  # time.monotonic() of the last message
 
 
 # ---------------------------------------------------------------- storage
@@ -120,15 +138,34 @@ def now_ms():
     return int(time.time() * 1000)
 
 
+def bdseq_is_newer(new, last):
+    """True if bdSeq `new` comes after `last` (both 0..255, wrapping)."""
+    return 1 <= (new - last) % 256 <= BDSEQ_MAX_AHEAD
+
+
+def find_bdseq(p):
+    """bdSeq metric of a payload as int, or None if missing."""
+    for m in p.metrics:
+        if m.name == "bdSeq":
+            v = metric_value(m)
+            return None if v is None else int(v)
+    return None
+
+
 # ---------------------------------------------------------------- host
 
 
 class SparkplugHost:
-    def __init__(self, client: mqtt.Client, sink, group_filter: str):
+    def __init__(self, client: mqtt.Client, sink, group_filter: str,
+                 node_timeout_s: float = 0):
         self.client = client
         self.sink = sink
         self.group_filter = group_filter
+        self.node_timeout_s = node_timeout_s  # 0 = no timeout
         self.nodes: dict[tuple[str, str], NodeState] = {}
+        # paho calls on_message from its own thread, check_timeouts() runs
+        # in the main thread: both change NodeState, so they take this lock.
+        self.lock = threading.Lock()
 
     def node(self, group, node) -> NodeState:
         return self.nodes.setdefault((group, node), NodeState())
@@ -172,8 +209,10 @@ class SparkplugHost:
             log.debug("Ignoring %s (device-level messages not used)", msg_type)
             return
         try:
-            handler(group, node, payload)
-            self.sink.flush()
+            with self.lock:
+                self.node(group, node).last_seen = time.monotonic()
+                handler(group, node, payload)
+                self.sink.flush()
         except Exception:  # keep running whatever one message does
             log.exception("Failed to handle %s", msg.topic)
 
@@ -181,14 +220,19 @@ class SparkplugHost:
 
     def handle_nbirth(self, group, node, p):
         st = self.node(group, node)
-        st.aliases.clear()
-        st.bd_seq = None
         ts = p.timestamp or now_ms()
+        bd_seq = find_bdseq(p)
+
+        if not self.check_bdseq(group, node, st, bd_seq, ts):
+            return
+
+        st.aliases.clear()
+        st.bd_seq = bd_seq
+        st.last_bd_seq = bd_seq
+        st.rejected = False
 
         for m in p.metrics:
             if m.name == "bdSeq":
-                st.bd_seq = metric_value(m)
-                st.bd_seq = None if st.bd_seq is None else int(st.bd_seq)
                 continue
             if m.HasField("alias"):
                 st.aliases[m.alias] = m.name
@@ -207,8 +251,33 @@ class SparkplugHost:
         log.info("%s/%s born: bdSeq=%s, %d alias(es)", group, node, st.bd_seq,
                  len(st.aliases))
 
+    def check_bdseq(self, group, node, st, bd_seq, ts):
+        """CR 3.8: accept an NBIRTH only with a new bdSeq. On rejection the
+        node is offline until a valid NBIRTH, and its data is dropped."""
+        if bd_seq is None:
+            reason = "no bdSeq"
+        elif st.last_bd_seq is None:
+            # first birth since the host started: nothing to compare with
+            log.info("%s/%s first NBIRTH seen (bdSeq %d)", group, node, bd_seq)
+            return True
+        elif bdseq_is_newer(bd_seq, st.last_bd_seq):
+            return True
+        else:
+            reason = f"bdSeq {bd_seq} not newer than {st.last_bd_seq}"
+
+        log.error("%s/%s NBIRTH rejected (%s): possible replayed session",
+                  group, node, reason)
+        st.online = False
+        st.rejected = True
+        self.sink.event(group, node, "REJECTED", bd_seq, ts)
+        return False
+
     def handle_ndata(self, group, node, p):
         st = self.node(group, node)
+
+        if st.rejected:
+            log.warning("%s/%s NDATA from a rejected session dropped", group, node)
+            return
 
         if not st.online:
             log.warning("%s/%s NDATA without a known NBIRTH", group, node)
@@ -237,9 +306,12 @@ class SparkplugHost:
 
     def handle_ndeath(self, group, node, p):
         st = self.node(group, node)
-        bd_seq = next((int(metric_value(m)) for m in p.metrics
-                       if m.name == "bdSeq" and metric_value(m) is not None),
-                      None)
+        bd_seq = find_bdseq(p)
+
+        if st.rejected:
+            # end of a rejected session: nothing to close, no DEATH event
+            st.rejected = False
+            return
 
         if st.bd_seq is not None and bd_seq is not None and bd_seq != st.bd_seq:
             # Will from an older session, published after the node already
@@ -251,6 +323,22 @@ class SparkplugHost:
         st.online = False
         self.sink.event(group, node, "DEATH", bd_seq, p.timestamp or now_ms())
         log.info("%s/%s died (bdSeq=%s)", group, node, bd_seq)
+
+    def check_timeouts(self):
+        """Marks nodes offline that have been silent for node_timeout_s.
+        Stands in for the MQTT Will the cellular modem can't send."""
+        if self.node_timeout_s <= 0:
+            return
+        now = time.monotonic()
+        with self.lock:
+            for (group, node), st in self.nodes.items():
+                if st.online and now - st.last_seen > self.node_timeout_s:
+                    st.online = False
+                    self.sink.event(group, node, "TIMEOUT", st.bd_seq, now_ms())
+                    self.sink.flush()
+                    log.warning("%s/%s silent for %.0f s: marked offline "
+                                "(bdSeq=%s)", group, node, now - st.last_seen,
+                                st.bd_seq)
 
     # --- commands
 
@@ -282,6 +370,8 @@ def main():
     port = int(os.environ.get("MQTT_PORT", "1883"))
     group = os.environ.get("SPARKPLUG_GROUP", "+")
     questdb_conf = os.environ.get("QUESTDB_CONF", "")
+    # Default: 2 x the firmware's 1 h publish interval + 5 min margin
+    node_timeout_s = float(os.environ.get("NODE_TIMEOUT_S", "7500"))
 
     sink = QuestDBSink(questdb_conf) if questdb_conf else LogSink()
     if not questdb_conf:
@@ -300,15 +390,17 @@ def main():
         client.tls_set(ca_certs=os.environ.get("MQTT_CA_FILE") or None,
                        cert_reqs=ssl.CERT_REQUIRED)
 
-    app = SparkplugHost(client, sink, group)
+    app = SparkplugHost(client, sink, group, node_timeout_s)
     client.on_connect = app.on_connect
     client.on_disconnect = app.on_disconnect
     client.on_message = app.on_message
     client.reconnect_delay_set(min_delay=1, max_delay=30)
 
+    stopping = threading.Event()
+
     def stop(*_):
         log.info("Shutting down")
-        client.disconnect()
+        stopping.set()
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
@@ -322,7 +414,13 @@ def main():
             log.warning("Broker %s:%d not reachable (%s), retrying", host, port, e)
             time.sleep(5)
 
-    client.loop_forever(retry_first_connection=True)
+    # paho runs the network loop (and reconnects) in its own thread; this
+    # thread only checks for silent nodes.
+    client.loop_start()
+    while not stopping.wait(TIMEOUT_CHECK_S):
+        app.check_timeouts()
+    client.disconnect()
+    client.loop_stop()
     sink.close()
     return 0
 
