@@ -112,7 +112,16 @@ int main(void)
 	power_mgmt_init();
 	power_marker_init();
 
-	build_client_id_initialize();
+	/* IEC 62443 CR 3.8: without a unique ID the node must not connect, so
+	 * we stop here instead of using a shared fallback ID. Light sleep is
+	 * released so a broken node doesn't drain the battery while awake. */
+	int ret = build_client_id_initialize();
+
+	if (ret) {
+		LOG_ERR("No unique client ID (MAC unreadable: %d), not starting", ret);
+		power_boot_done();
+		return ret;
+	}
 	LOG_INF("client id: %s", build_client_id_get());
 
 	/* Wi-Fi: the local network to the SimPLC (Modbus TCP), and the uplink
