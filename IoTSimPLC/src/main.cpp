@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include "simPLC.h"
-#include "network.h"
+#include "credentials.h"
+#include "wifi_network.h"
 #include "modbusTCP.h"
 #include "alarm.h"
 #include "display.h"
@@ -28,9 +29,32 @@ void setup() {
   alarmInit();
   displayInit();
 
-  displayShowMessage("IoTSimPLC", "Connecting Wi-Fi...");
-  if (network_initialize() != 0) {
-    Serial.println("Network not ready, auto-reconnect will keep trying");
+  char ssid[CRED_SSID_MAX];
+  char psk[CRED_PSK_MAX];
+
+  // Short window to change the stored Wi-Fi settings (hold BOOT after the board has started)
+  displayShowMessage("Hold BOOT now to", "change Wi-Fi setup");
+  if (credentialsResetRequested(3000)) {
+    credentialsClear();
+  }
+
+  bool haveCreds = credentialsLoad(ssid, sizeof ssid, psk, sizeof psk);
+
+  if (!haveCreds) {
+    displayShowMessage("Wi-Fi setup needed", "Use serial monitor");
+    if (credentialsProvisionSerial(120000)) {
+      haveCreds = credentialsLoad(ssid, sizeof ssid, psk, sizeof psk);
+    }
+  }
+
+  if (haveCreds) {
+    displayShowMessage("IoTSimPLC", "Connecting Wi-Fi...");
+    if (network_initialize(ssid, psk) != 0) {
+      Serial.println("Network not ready, auto-reconnect will keep trying");
+      Serial.println("Wrong password? Restart and hold BOOT to enter new settings");
+    }
+  } else {
+    Serial.println("No Wi-Fi settings, running without network. Restart to try again");
   }
 
   modbusInit();
