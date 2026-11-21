@@ -1,6 +1,6 @@
 #include "display.h"
 #include "simPLC.h"
-#include "network.h"
+#include "wifi_network.h"
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -59,7 +59,7 @@ void displayUpdate(void) {
   if (now - lastDraw < DISPLAY_REFRESH_MS) return;
   lastDraw = now;
 
-  char line[32];
+  char line[40];
 
   u8g2.clearBuffer();
 
