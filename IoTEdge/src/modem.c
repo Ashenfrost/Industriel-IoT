@@ -199,6 +199,9 @@ int modem_init(const struct device *uart, const struct modem_cfg *c)
 		return ret;
 	}
 	at_send("AT+CMEE=2", NULL, 0, K_MSEC(T_FAST_MS)); /* tekstfejl i stedet for tal */
+	/* Radioen kan være slukket fra før (AT+CFUN=0, fx efter power_sleep_test). Så er
+	 * SIM'et også slukket, og CPIN-tjekket nedenfor fejler. Harmløst hvis den er tændt. */
+	at_send("AT+CFUN=1", NULL, 0, K_MSEC(T_CONF_MS));
 
 	char resp[48];
 
@@ -217,6 +220,23 @@ int modem_init(const struct device *uart, const struct modem_cfg *c)
 	}
 	LOG_INF("modem klar");
 	return 0;
+}
+
+int modem_radio_on(void)
+{
+	return at_send("AT+CFUN=1", NULL, 0, K_MSEC(T_PDP_MS));
+}
+
+int modem_radio_off(void)
+{
+	atomic_set(&mqtt_up, 0);
+	atomic_set(&pdp_up_flag, 0);
+	int ret = at_send("AT+CFUN=0", NULL, 0, K_MSEC(T_PDP_MS));
+
+	if (ret == 0) {
+		LOG_INF("radio slukket");
+	}
+	return ret;
 }
 
 int modem_attach(uint32_t timeout_ms)
@@ -316,6 +336,8 @@ static int smstate_query(void)
 /* ------------------------------------------------------------------ */
 
 #define CA_FILE      "ca.pem"
+#define CLIENT_CERT_FILE "client.pem"
+#define CLIENT_KEY_FILE  "client.key"
 #define T_CFS_MS     10000
 #define SSL_CTX      0      /* AT+CSSLCFG-kontekst; AT+SMSSL=1 peger på kontekst 0 */
 
@@ -330,9 +352,8 @@ static bool is_ipv4(const char *s)
 	return true;
 }
 
-/* Lægger CA-certifikatet i modemets filsystem og konverterer det til modemets eget
- * format. Én gang pr. boot; filen overlever ikke nødvendigvis et modem-reset. */
-static int upload_ca(const char *pem)
+/* Skriver en PEM-fil til modemets filsystem (/customer). Indholdet logges aldrig. */
+static int write_file(const char *name, const char *pem)
 {
 	size_t len = strlen(pem);
 	int ret;
@@ -347,12 +368,23 @@ static int upload_ca(const char *pem)
 	char cmd[64];
 
 	/* dir 3 = /customer, mode 0 = overskriv, timeout i ms til at modtage data */
-	snprintk(cmd, sizeof(cmd), "AT+CFSWFILE=3,\"%s\",0,%u,%u", CA_FILE, (unsigned int)len,
+	snprintk(cmd, sizeof(cmd), "AT+CFSWFILE=3,\"%s\",0,%u,%u", name, (unsigned int)len,
 		 T_CFS_MS);
 	ret = at_send_data(cmd, pem, len, K_MSEC(T_CFS_MS));
 	(void)at_send("AT+CFSTERM", NULL, 0, K_MSEC(T_CONF_MS));
 	if (ret) {
-		LOG_ERR("CA-upload fejlede (%d)", ret);
+		LOG_ERR("Upload af %s fejlede (%d)", name, ret);
+	}
+	return ret;
+}
+
+/* Lægger CA-certifikatet i modemets filsystem og konverterer det til modemets eget
+ * format. Én gang pr. boot; filen overlever ikke nødvendigvis et modem-reset. */
+static int upload_ca(const char *pem)
+{
+	int ret = write_file(CA_FILE, pem);
+
+	if (ret) {
 		return ret;
 	}
 	/* 2 = rodcertifikat */
@@ -361,7 +393,30 @@ static int upload_ca(const char *pem)
 		LOG_ERR("CA-certifikatet kunne ikke konverteres (%d) - er det gyldig PEM?", ret);
 		return ret;
 	}
-	LOG_INF("CA-certifikat uploadet (%u bytes)", (unsigned int)len);
+	LOG_INF("CA-certifikat uploadet (%u bytes)", (unsigned int)strlen(pem));
+	return 0;
+}
+
+/* Klientcertifikat + privat nøgle til mTLS (IEC 62443 CR 3.8): brokeren kræver
+ * dem og bruger certifikatets CN som brugernavn. 1 = klientcertifikat. */
+static int upload_client_cert(const char *cert_pem, const char *key_pem)
+{
+	int ret = write_file(CLIENT_CERT_FILE, cert_pem);
+
+	if (ret) {
+		return ret;
+	}
+	ret = write_file(CLIENT_KEY_FILE, key_pem);
+	if (ret) {
+		return ret;
+	}
+	ret = cmdf(T_CONF_MS, NULL, 0, "AT+CSSLCFG=\"CONVERT\",1,\"%s\",\"%s\"",
+		   CLIENT_CERT_FILE, CLIENT_KEY_FILE);
+	if (ret) {
+		LOG_ERR("Klientcertifikatet kunne ikke konverteres (%d)", ret);
+		return ret;
+	}
+	LOG_INF("Klientcertifikat uploadet (%u bytes)", (unsigned int)strlen(cert_pem));
 	return 0;
 }
 
@@ -373,10 +428,25 @@ static int tls_configure(void)
 	if (!cfg->tls) {
 		return at_send("AT+SMSSL=0", NULL, 0, K_MSEC(T_CONF_MS));
 	}
-	if (verify && !ca_uploaded) {
+	/* IEC 62443 CR 3.1/3.8: TLS uden certifikat-tjek giver ingen sikkerhed
+	 * mod man-in-the-middle, så vi forbinder slet ikke uden CA. */
+	if (!verify) {
+		LOG_ERR("TLS: ingen CA sat, afviser at forbinde");
+		return -EACCES;
+	}
+	bool mtls = cfg->client_cert_pem && cfg->client_cert_pem[0] &&
+		    cfg->client_key_pem && cfg->client_key_pem[0];
+
+	if (!ca_uploaded) {
 		ret = upload_ca(cfg->ca_cert_pem);
 		if (ret) {
 			return ret;
+		}
+		if (mtls) {
+			ret = upload_client_cert(cfg->client_cert_pem, cfg->client_key_pem);
+			if (ret) {
+				return ret;
+			}
 		}
 		ca_uploaded = true;
 	}
@@ -391,10 +461,8 @@ static int tls_configure(void)
 			return ret;
 		}
 	}
-	if (!verify) {
-		LOG_WRN("TLS uden certifikat-tjek (ingen CA sat)");
-	}
-	return cmdf(T_CONF_MS, NULL, 0, "AT+SMSSL=1,\"%s\",\"\"", verify ? CA_FILE : "");
+	return cmdf(T_CONF_MS, NULL, 0, "AT+SMSSL=1,\"%s\",\"%s\"", CA_FILE,
+		    mtls ? CLIENT_CERT_FILE : "");
 }
 
 static int sub_at(const char *topic, int qos)
@@ -475,10 +543,33 @@ int modem_mqtt_connect(void)
 	return 0;
 }
 
+/* Time for the last packets to leave after AT+SMDISC, before the caller
+ * takes the data connection down */
+/* Pause between two AT+SMPUB, and before a retry of a refused one */
+#define PUB_GAP_MS        200
+#define PUB_RETRY_MS      500
+
+#define DISC_FLUSH_MS     1000
+#define DISC_WAIT_MS      3000
+
 int modem_mqtt_disconnect(void)
 {
+	int64_t end;
+	int ret;
+
 	atomic_set(&mqtt_up, 0);
-	return at_send("AT+SMDISC", NULL, 0, K_MSEC(T_CONF_MS));
+	ret = at_send("AT+SMDISC", NULL, 0, K_MSEC(T_CONF_MS));
+
+	/* "OK" to AT+SMPUB/AT+SMDISC only means the modem has the data, not
+	 * that it went out. Taking PDP down right after (AT+CNACT=0) lost the
+	 * last NDATA and the DISCONNECT. Wait until the modem reports the MQTT
+	 * connection closed, then give TCP/TLS a moment to flush. */
+	end = k_uptime_get() + DISC_WAIT_MS;
+	while (k_uptime_get() < end && smstate_query() > 0) {
+		k_sleep(K_MSEC(200));
+	}
+	k_sleep(K_MSEC(DISC_FLUSH_MS));
+	return ret;
 }
 
 bool modem_mqtt_is_connected(void)
@@ -519,11 +610,29 @@ int modem_mqtt_publish(const char *topic, const void *payload, size_t len, int q
 	if (n < 0 || n >= (int)sizeof(cmd)) {
 		return -ENOMEM;
 	}
-	int ret = at_send_data(cmd, payload, len,
-			       K_MSEC(qos ? T_SMPUB_QOS12 : T_SMPUB_QOS0));
+	/* Back-to-back publishes (NBIRTH, then NDATA 10 ms later) were refused
+	 * with "+CME ERROR: operation not allowed" while the modem was still
+	 * sending the previous one: keep a gap, and retry once if refused. */
+	static int64_t last_pub_ms;
+	int ret = -EIO;
 
-	if (ret) {
-		smstate_query(); /* opdatér cached forbindelsesstatus */
+	for (int attempt = 0; attempt < 2; attempt++) {
+		int64_t gap = last_pub_ms + PUB_GAP_MS - k_uptime_get();
+
+		if (gap > 0) {
+			k_sleep(K_MSEC(gap));
+		}
+		ret = at_send_data(cmd, payload, len,
+				   K_MSEC(qos ? T_SMPUB_QOS12 : T_SMPUB_QOS0));
+		last_pub_ms = k_uptime_get();
+		if (ret == 0) {
+			break;
+		}
+		/* opdatér cached forbindelsesstatus; no retry if MQTT is gone */
+		if (smstate_query() <= 0) {
+			break;
+		}
+		k_sleep(K_MSEC(PUB_RETRY_MS));
 	}
 	return ret;
 }

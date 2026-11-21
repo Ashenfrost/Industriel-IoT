@@ -30,10 +30,14 @@ struct modem_cfg {
 	const char *password;
 	uint16_t keepalive_s;     /* 0 = 60 */
 	bool clean_session;
-	/* TLS inde i modemet (TLS 1.2). ca_cert_pem = brokerens CA i PEM; NULL eller ""
-	 * = krypteret, men serverens certifikat tjekkes ikke. */
+	/* TLS inde i modemet (TLS 1.2). ca_cert_pem = brokerens CA i PEM. NULL eller ""
+	 * med tls = true giver -EACCES: der forbindes aldrig uden certifikat-tjek. */
 	bool tls;
 	const char *ca_cert_pem;
+	/* mTLS: klientcertifikat og privat nøgle i PEM. NULL eller "" = intet
+	 * klientcertifikat (brokeren afviser så, hvis den kræver et). */
+	const char *client_cert_pem;
+	const char *client_key_pem;
 };
 
 /*
@@ -48,6 +52,13 @@ typedef void (*modem_msg_cb_t)(const char *topic, const uint8_t *payload, size_t
 
 /** Start AT-laget, vent på modulet, ATE0, AT+CMEE=2, tjek SIM. cfg skal leve evigt (static). */
 int modem_init(const struct device *uart, const struct modem_cfg *cfg);
+
+/** Radio til/fra (AT+CFUN=1 / AT+CFUN=0). Slukket radio: ingen registrering, ingen
+ * PDP, SIM'et er også slukket; modemet svarer stadig på AT. Målt (hele systemet,
+ * ESP i light sleep): 17,8 mA tændt og registreret vs 7,7 mA slukket. Efter
+ * modem_radio_on() skal man vente på registrering med modem_attach(). */
+int modem_radio_on(void);
+int modem_radio_off(void);
 
 /** Vent på LTE-registrering (CEREG 1 eller 5). */
 int modem_attach(uint32_t timeout_ms);

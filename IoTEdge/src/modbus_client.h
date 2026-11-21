@@ -14,4 +14,7 @@ struct modbus_readings {
 
 int modbus_client_initialize(void);
 int modbus_client_get_readings(struct modbus_readings *out);  /* -ENODATA if none yet */
+/* One read right now (Wi-Fi must be up), socket closed afterwards. Used in
+ * APP_WIFI_ON_DEMAND mode instead of the background poll thread. */
+int modbus_client_read_now(struct modbus_readings *out);
 int modbus_client_set_coil(uint16_t coil, bool on);

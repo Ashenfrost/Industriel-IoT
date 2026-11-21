@@ -3,7 +3,7 @@
  * "Option A": the node is only connected while it has something to send.
  * Every APP_PUBLISH_INTERVAL_S the MQTT thread runs one short session:
  *
- *   1. sparkplug_begin_session()        -> new bdSeq
+ *   1. begin_session()                  -> new bdSeq, saved in flash
  *   2. CONNECT (clean session)
  *   3. CONNACK -> NBIRTH (seq 0)
  *   4. all queued samples as NDATA
@@ -34,8 +34,11 @@
 #include "mqtt_client.h"
 #include "mqtt_settings.h"
 #include "client_id.h"
+#include "bdseq_store.h"
 #include "time_sync.h"
 #include "app_config.h"
+#include "power_marker.h"
+#include "power_mgmt.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
@@ -45,6 +48,24 @@
 #if APP_UPLINK_CELLULAR
 #include "modem.h"
 #include "mqtt_ca_cert.h"
+/* mTLS (IEC 62443 CR 3.8): this device's client certificate and private key.
+ * Secret, so it is not in git: make it from the PEM files with
+ *   openssl rsa -in <device>.key -traditional -out <device>.pkcs1.key
+ *   python tools/scripts/pem2h.py src/mqtt_client_cert.h \
+ *       MQTT_CLIENT_CERT_PEM=<device>.crt MQTT_CLIENT_KEY_PEM=<device>.pkcs1.key
+ * The SIM7080G needs the key as PKCS#1 ("BEGIN RSA PRIVATE KEY"). With a
+ * PKCS#8 key ("BEGIN PRIVATE KEY") it sends a broken certificate and the
+ * broker logs "asn1 ... sequence length mismatch".
+ * The broker requires it on 8883 and uses its CN as the MQTT username. */
+#if __has_include("mqtt_client_cert.h")
+#include "mqtt_client_cert.h"
+#elif APP_MQTT_TLS && !defined(APP_ALLOW_INSECURE)
+#error "src/mqtt_client_cert.h missing: the broker requires a client certificate"
+#endif
+#ifndef MQTT_CLIENT_CERT_PEM
+#define MQTT_CLIENT_CERT_PEM ""
+#define MQTT_CLIENT_KEY_PEM  ""
+#endif
 #include <zephyr/device.h>
 #else
 #include <zephyr/net/mqtt.h>
@@ -65,6 +86,8 @@ static K_THREAD_STACK_DEFINE(mqtt_stack, STACK_SIZE);
 static struct k_thread mqtt_thread_data;
 
 K_MSGQ_DEFINE(sample_q, sizeof(struct sparkplug_sample), APP_SAMPLE_QUEUE_LEN, 8);
+/* Given for every queued sample; only waited on in persistent mode */
+static K_SEM_DEFINE(sample_ready, 0, K_SEM_MAX_LIMIT);
 /* Counts samples dropped because the queue was full. The oldest samples are
  * the ones being published, so a drop during a publish means fewer items
  * are left to remove afterwards. */
@@ -80,7 +103,7 @@ static char topic_ndata[SPARKPLUG_TOPIC_LEN];
 static uint8_t ndeath_buf[32];
 static int ndeath_len;
 static uint8_t payload_buf[SPARKPLUG_PAYLOAD_LEN];
-static struct sparkplug_sample batch[APP_NDATA_MAX_SAMPLES];
+static struct sparkplug_sample batch[SPARKPLUG_MAX_SAMPLES_PER_NDATA];
 
 /* Last sample sent, so NBIRTH can report a current value */
 static struct sparkplug_sample last_sample;
@@ -93,10 +116,11 @@ static void mqtt_thread_fn(void *p1, void *p2, void *p3);
 /* ------------------------------------------------------------------ */
 #if APP_UPLINK_CELLULAR
 
-/* AT+SMPUB takes at most 1024 bytes. One NDATA sample is ~18 bytes, so 60
- * samples (~1.1 kB) don't fit; 50 (~0.9 kB) do with margin. */
+/* AT+SMPUB takes at most 1024 bytes. One sample is SP_METRICS_PER_SAMPLE (7)
+ * metrics of ~18 bytes = ~125 bytes, so 7 samples (~0.9 kB) fit with margin;
+ * 8 (the metric limit) would be ~1 kB, too close. */
 #define UPLINK_MAX_PAYLOAD      MODEM_MQTT_MAX_PAYLOAD
-#define NDATA_SAMPLES_PER_MSG   50
+#define NDATA_SAMPLES_PER_MSG   7
 
 static struct modem_cfg modem_cfg;   /* must live forever (modem keeps a pointer) */
 static bool modem_ready;
@@ -119,23 +143,49 @@ static int uplink_init(void)
 		.clean_session = true,          /* Sparkplug requires clean session */
 		.tls = APP_MQTT_TLS,
 		.ca_cert_pem = MQTT_CA_CERT_PEM,
+		.client_cert_pem = MQTT_CLIENT_CERT_PEM,
+		.client_key_pem = MQTT_CLIENT_KEY_PEM,
 	};
 	/* Zephyr's SNTP can't reach the network through the modem */
 	time_sync_set_source(modem_time_source);
 	return 0;
 }
 
+/* Ends every session (clean or not): data connection down and, with
+ * APP_MODEM_RADIO_OFF, the radio off until the next session. Then light
+ * sleep is allowed again. */
+static void uplink_shutdown(void)
+{
+	if (modem_ready) {
+		(void)modem_pdp_down();
+#if APP_MODEM_RADIO_OFF
+		(void)modem_radio_off();
+#endif
+	}
+	power_unlock(PWR_UPLINK);
+}
+
 static int uplink_open(void)
 {
 	int ret;
 
+	/* UART traffic to the modem for the whole session: no light sleep */
+	power_lock(PWR_UPLINK);
+
 	if (!modem_ready) {
+		/* modem_init() also turns the radio on (AT+CFUN=1) */
 		ret = modem_init(DEVICE_DT_GET(DT_NODELABEL(uart1)), &modem_cfg);
 		if (ret) {
 			LOG_ERR("modem init failed: %d", ret);
 			return ret;
 		}
 		modem_ready = true;
+	} else if (APP_MODEM_RADIO_OFF) {
+		ret = modem_radio_on();
+		if (ret) {
+			LOG_ERR("radio on failed: %d", ret);
+			return ret;
+		}
 	}
 	ret = modem_attach(APP_MODEM_ATTACH_MS);
 	if (ret) {
@@ -165,22 +215,29 @@ static int uplink_open(void)
 /* Sparkplug: NBIRTH/NDATA/NDEATH are QoS 0 and never retained */
 static int uplink_publish(const char *topic, const uint8_t *data, size_t len)
 {
-	return modem_mqtt_publish(topic, data, len, 0, false);
+	power_marker_set(PM_MARK_PUBLISH, true);
+	int ret = modem_mqtt_publish(topic, data, len, 0, false);
+
+	power_marker_set(PM_MARK_PUBLISH, false);
+	return ret;
 }
 
 static int uplink_close(void)
 {
 	int ret = modem_mqtt_disconnect();
 
-	/* Option A: no data connection between sessions */
-	(void)modem_pdp_down();
+	/* Option A: no data connection (and no radio) between sessions */
+	uplink_shutdown();
 	return ret;
 }
 
 static void uplink_abort(void)
 {
-	(void)modem_mqtt_disconnect();
-	(void)modem_pdp_down();
+	if (modem_ready) {
+		/* (if the modem never answered there is nothing to tear down) */
+		(void)modem_mqtt_disconnect();
+	}
+	uplink_shutdown();
 }
 
 /* ------------------------------------------------------------------ */
@@ -192,7 +249,7 @@ static void uplink_abort(void)
 #define TX_BUF_SIZE        256
 #define CONNACK_TIMEOUT_MS 10000
 #define UPLINK_MAX_PAYLOAD      sizeof(payload_buf)
-#define NDATA_SAMPLES_PER_MSG   APP_NDATA_MAX_SAMPLES
+#define NDATA_SAMPLES_PER_MSG   SPARKPLUG_MAX_SAMPLES_PER_NDATA
 
 static struct mqtt_client client;
 static struct sockaddr_storage broker;
@@ -433,6 +490,7 @@ int mqtt_client_queue_sample(const struct sparkplug_sample *sample)
 			LOG_WRN("Sample queue full, dropped oldest sample");
 		}
 	}
+	k_sem_give(&sample_ready);
 	return 0;
 }
 
@@ -453,7 +511,7 @@ static int publish_nbirth(void)
 	return ret;
 }
 
-BUILD_ASSERT(NDATA_SAMPLES_PER_MSG <= APP_NDATA_MAX_SAMPLES,
+BUILD_ASSERT(NDATA_SAMPLES_PER_MSG <= SPARKPLUG_MAX_SAMPLES_PER_NDATA,
 	     "more samples per message than the proto allows");
 
 /* Sends one NDATA with up to NDATA_SAMPLES_PER_MSG queued samples.
@@ -510,18 +568,50 @@ static int publish_ndata_chunk(void)
 	return (int)n;
 }
 
+/* Continues bdSeq from flash, so a reboot doesn't start over at 0 */
+static void restore_bdseq(void)
+{
+	uint8_t last;
+	int ret = bdseq_store_load(&last);
+
+	if (ret == 0) {
+		sparkplug_restore_bdseq(last);
+		LOG_INF("bdSeq restored from flash: last %u", last);
+	} else if (ret == -ENOENT) {
+		LOG_INF("No saved bdSeq (new device), starting at 0");
+	} else {
+		LOG_ERR("bdSeq load failed (%d), starting at 0", ret);
+	}
+}
+
+/* New session: new bdSeq, saved BEFORE connecting. If the node dies during
+ * the session, the next one still gets a new bdSeq (CR 3.8). A failed
+ * connect leaves a gap in the sequence, which the host allows. If the save
+ * fails the session still runs; the host flags a repeated bdSeq. */
+static void begin_session(void)
+{
+	sparkplug_begin_session();
+
+	int ret = bdseq_store_save(sparkplug_get_bdseq());
+
+	if (ret) {
+		LOG_ERR("bdSeq %u not saved: %d", sparkplug_get_bdseq(), ret);
+	}
+}
+
 /* One complete option A session. On any error the connection is aborted
  * and unsent samples stay queued. */
 static int run_session(void)
 {
-	/* New session: new bdSeq. The same NDEATH bytes are used as the Will
-	 * (Wi-Fi) and as our own NDEATH at the end of the session. */
-	sparkplug_begin_session();
+	/* The same NDEATH bytes are used as the Will (Wi-Fi) and as our own
+	 * NDEATH at the end of the session. */
+	begin_session();
 	ndeath_len = sparkplug_encode_ndeath(ndeath_buf, sizeof(ndeath_buf));
 	if (ndeath_len < 0) {
 		return ndeath_len;
 	}
 
+	power_marker_set(PM_MARK_SESSION, true);
 	int rc = uplink_open();
 
 	if (rc == 0) {
@@ -545,14 +635,58 @@ static int run_session(void)
 		}
 		if (rc == 0) {
 			LOG_INF("Session done, disconnected");
+			power_marker_set(PM_MARK_SESSION, false);
 			return 0;
 		}
 	}
 
 	LOG_ERR("Session failed: %d", rc);
 	uplink_abort();
+	power_marker_set(PM_MARK_SESSION, false);
 	return rc;
 }
+
+#if APP_PERSISTENT_SESSION
+BUILD_ASSERT(APP_UPLINK_CELLULAR, "APP_PERSISTENT_SESSION is only implemented for cellular "
+				  "(the modem keeps the MQTT keepalive by itself)");
+
+/* "No power saving" mode for the baseline measurement: connect once, then
+ * publish every sample as soon as it is queued. The SESSION marker stays
+ * high while connected. On an error the connection is dropped and set up
+ * again after APP_RETRY_INTERVAL_S. */
+static void persistent_loop(void)
+{
+	bool up = false;
+
+	while (1) {
+		if (!up) {
+			begin_session();
+			ndeath_len = sparkplug_encode_ndeath(ndeath_buf, sizeof(ndeath_buf));
+			power_marker_set(PM_MARK_SESSION, true);
+			up = (uplink_open() == 0 && publish_nbirth() == 0);
+			if (!up) {
+				LOG_ERR("Persistent connect failed, retrying in %d s",
+					APP_RETRY_INTERVAL_S);
+				uplink_abort();
+				power_marker_set(PM_MARK_SESSION, false);
+				k_sleep(K_SECONDS(APP_RETRY_INTERVAL_S));
+				continue;
+			}
+			LOG_INF("Persistent session up");
+		}
+
+		k_sem_take(&sample_ready, K_FOREVER);
+		while (up && k_msgq_num_used_get(&sample_q) > 0) {
+			if (publish_ndata_chunk() < 0) {
+				LOG_ERR("Persistent publish failed, reconnecting");
+				uplink_abort();
+				power_marker_set(PM_MARK_SESSION, false);
+				up = false;
+			}
+		}
+	}
+}
+#endif
 
 static void mqtt_thread_fn(void *p1, void *p2, void *p3)
 {
@@ -570,6 +704,12 @@ static void mqtt_thread_fn(void *p1, void *p2, void *p3)
 		APP_UPLINK_CELLULAR && APP_MQTT_TLS ? " + TLS" : "");
 
 	uplink_init();
+	restore_bdseq();
+
+#if APP_PERSISTENT_SESSION
+	LOG_WRN("APP_PERSISTENT_SESSION: staying connected, no batching (power baseline)");
+	persistent_loop();
+#endif
 
 	/* First session right away, so a fresh boot shows up on the host */
 	int64_t next = k_uptime_get();

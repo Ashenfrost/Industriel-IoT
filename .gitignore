@@ -80,6 +80,8 @@ wifi_creds.h
 
 # IoTEdge mqtt
 mqtt_settings.h
+# mTLS client certificate + PRIVATE KEY (made with tools/scripts/pem2h.py)
+mqtt_client_cert.h
 
 # python (cloud tools)
 __pycache__/
