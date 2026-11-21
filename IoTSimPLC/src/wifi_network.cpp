@@ -1,5 +1,4 @@
-#include "network.h"
-#include "wifi_creds.h"
+#include "wifi_network.h"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -47,7 +46,7 @@ static bool wait_for(volatile bool *flag, unsigned long timeout_ms)
   return true;
 }
 
-int network_initialize(void)
+int network_initialize(const char* ssid, const char* psk)
 {
   WiFi.onEvent(wifi_event_handler);
   WiFi.mode(WIFI_STA);
@@ -55,10 +54,10 @@ int network_initialize(void)
   WiFi.setAutoReconnect(true);   // reconnect on its own if the link drops
   WiFi.setSleep(false);          // no power-save, keeps Modbus latency low
 
-  Serial.printf("Connecting to Wi-Fi SSID: %s\n", WIFI_SSID);
+  Serial.printf("Connecting to Wi-Fi SSID: %s\n", ssid);
 
   // No WiFi.config() call, so the ESP32 uses DHCP (same as IoTEdge)
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  WiFi.begin(ssid, psk[0] ? psk : nullptr);   // empty password = open network
 
   if (!wait_for(&wifi_connected, WIFI_CONNECT_TIMEOUT_MS)) {
     Serial.println("Wi-Fi connect timeout");
