@@ -27,10 +27,41 @@
     wakeup-source;
 };
 
+/* Turned off: on in the board's default devicetree, but not used by this
+ * application. Their drivers are not started, which keeps boot (every deep
+ * sleep wake is a boot) short and avoids powering blocks we don't need.
+ *   coretemp     chip temperature sensor (was enabled here, never read)
+ *   uart0        the console is on usb_serial; the modem is on uart1
+ *   i2c0, spi2   no I2C/SPI devices on the Edge
+ *   esp32_bt_hci, ieee802154   no Bluetooth or Thread/Zigbee radio
+ *   mbox0        mailbox to the LP core, which is not used (see report)
+ */
 &coretemp {
-    status = "okay";
-    range-min = <(-10)>;
-    range-max = <80>;
+    status = "disabled";
+};
+
+&uart0 {
+    status = "disabled";
+};
+
+&i2c0 {
+    status = "disabled";
+};
+
+&spi2 {
+    status = "disabled";
+};
+
+&esp32_bt_hci {
+    status = "disabled";
+};
+
+&ieee802154 {
+    status = "disabled";
+};
+
+&mbox0 {
+    status = "disabled";
 };
 
 /* SIM7080G (M5Stamp CatM) cellular modem: ESP TX = GPIO23, RX = GPIO22 */

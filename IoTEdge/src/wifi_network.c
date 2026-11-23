@@ -11,6 +11,7 @@
 #include <zephyr/net/net_mgmt.h>
 #include <zephyr/net/net_event.h>
 #include <zephyr/net/wifi_mgmt.h>
+#include <zephyr/settings/settings.h>
 #include <zephyr/sys/util.h>
 
 LOG_MODULE_REGISTER(network, LOG_LEVEL_INF);
@@ -73,6 +74,64 @@ static void ipv4_event_handler(struct net_mgmt_event_callback *cb,
 		LOG_INF("IPv4 address acquired");
 		atomic_set(&ipv4_up, 1);
 		k_sem_give(&ipv4_ready_sem);
+	}
+}
+
+/* Fast reconnect: the access point (channel + BSSID) of the last successful
+ * connection, kept in flash, so a wake from deep sleep connects without
+ * scanning every channel first. If it fails we clear it and scan as before.
+ * DHCP is kept (a fixed IP could clash when the hotspot hands it out). */
+struct ap_cache {
+	uint8_t channel;
+	uint8_t bssid[WIFI_MAC_ADDR_LEN];
+};
+static struct ap_cache known_ap;
+static bool known_ap_valid;
+
+static int ap_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
+{
+	const char *next;
+
+	if (!settings_name_steq(name, "ap", &next) || next || len != sizeof(known_ap)) {
+		return -ENOENT;
+	}
+	known_ap_valid = read_cb(cb_arg, &known_ap, sizeof(known_ap)) == sizeof(known_ap) &&
+			 known_ap.channel != 0;
+	return 0;
+}
+
+SETTINGS_STATIC_HANDLER_DEFINE(wifi_ap, "wifi", NULL, ap_set, NULL, NULL);
+
+static void ap_cache_use(bool use)
+{
+	if (use && known_ap_valid) {
+		params.channel = known_ap.channel;
+		memcpy(params.bssid, known_ap.bssid, sizeof(params.bssid));
+	} else {
+		params.channel = WIFI_CHANNEL_ANY;
+		memset(params.bssid, 0, sizeof(params.bssid));
+	}
+}
+
+/* After a connect: remember the AP if it changed (one flash write then) */
+static void ap_cache_update(void)
+{
+	struct wifi_iface_status st = {0};
+	struct ap_cache now;
+
+	if (net_mgmt(NET_REQUEST_WIFI_IFACE_STATUS, iface, &st, sizeof(st)) != 0 ||
+	    st.channel == 0) {
+		return;
+	}
+	now.channel = st.channel;
+	memcpy(now.bssid, st.bssid, sizeof(now.bssid));
+	if (known_ap_valid && memcmp(&now, &known_ap, sizeof(now)) == 0) {
+		return;
+	}
+	known_ap = now;
+	known_ap_valid = true;
+	if (settings_save_one("wifi/ap", &known_ap, sizeof(known_ap)) == 0) {
+		LOG_INF("Wi-Fi AP saved for fast reconnect (channel %u)", known_ap.channel);
 	}
 }
 
@@ -146,6 +205,13 @@ int network_up(int timeout_s)
 	/* taken down by network_down() between samples */
 	net_if_up(iface);
 	k_sem_reset(&ipv4_ready_sem);
+	/* First try the AP we know (no scan); after that a full scan */
+	bool cached = known_ap_valid;
+
+	ap_cache_use(cached);
+	if (cached) {
+		LOG_INF("Wi-Fi: known AP on channel %u", known_ap.channel);
+	}
 	/* Connect, and try again if an attempt fails at once (seen with phone
 	 * hotspots right after a disconnect) until the deadline. No supervisor
 	 * thread in on-demand mode, so nothing else competes for the link. */
@@ -161,10 +227,19 @@ int network_up(int timeout_s)
 			/* the next connect or disconnect event, whichever comes */
 			k_sem_take(&state_changed, K_MSEC(MIN(left, 10000)));
 		}
+		if (!atomic_get(&wifi_up) && cached) {
+			/* hotspot moved to another channel, or a new AP: scan */
+			LOG_INF("Wi-Fi: known AP not found, scanning");
+			cached = false;
+			known_ap_valid = false;
+			ap_cache_use(false);
+			continue;
+		}
 		if (!atomic_get(&wifi_up)) {
 			k_sleep(K_MSEC(MIN(1000, MAX(deadline - k_uptime_get(), 0))));
 		}
 	}
+	ap_cache_update();
 	/* After a reconnect the old DHCP address may still be there, so no new
 	 * "address added" event comes: check before waiting for one. */
 	if (atomic_get(&ipv4_up) ||
@@ -236,6 +311,10 @@ int network_initialize(void)
 	params.mfp = WIFI_MFP_OPTIONAL;
 
 #if APP_WIFI_ON_DEMAND
+	/* The AP of the last connection (fast reconnect, see ap_cache_use()) */
+	if (settings_subsys_init() == 0) {
+		(void)settings_load_subtree("wifi");
+	}
 	/* Wi-Fi stays off until a sample calls network_up(), which also does
 	 * its own retries: no supervisor thread competing for the link. */
 	LOG_INF("Wi-Fi on demand (SSID %s): connects for each sample only", params.ssid);
