@@ -5,6 +5,7 @@
 #include "modbusTCP.h"
 #include "alarm.h"
 #include "display.h"
+#include "buffer.h"
 
 static void printReadings() {
   for (int i = 0; i < NUM_SENSORS; i++) {
@@ -20,12 +21,16 @@ static void printReadings() {
                 simPlcGetOutput(OUT_TEMP_TOP), simPlcGetOutput(OUT_TEMP_MID),
                 simPlcGetOutput(OUT_TEMP_BOT), simPlcGetOutput(OUT_HUM_TOP),
                 simPlcGetOutput(OUT_HUM_MID), simPlcGetOutput(OUT_HUM_BOT));
-  Serial.printf("heartbeat=%u status=0x%02X\n\n", simPlcHeartbeat(), simPlcStatus());
+  Serial.printf("heartbeat=%u status=0x%02X\n", simPlcHeartbeat(), simPlcStatus());
+  Serial.printf("buffer: %u sample(s), seq %u..%u, oldest %lu s, clock %s\n\n",
+                bufferCount(), bufferOldestSeq(), bufferNewestSeq(),
+                (unsigned long)bufferOldestAgeS(), clockIsSet() ? "set" : "not set");
 }
 
 void setup() {
   Serial.begin(9600);
   simPlcInit();
+  bufferInit();
   alarmInit();
   displayInit();
 
@@ -62,6 +67,8 @@ void setup() {
 
 void loop() {
   simPlcUpdate();
+  bufferUpdate();    // one sample every SAMPLE_INTERVAL_MS for the Edge
+  network_maintain();
   modbusUpdate();   // must run every loop, so no delay() here
   alarmUpdate();
   displayUpdate();

@@ -291,6 +291,80 @@ int modbus_client_set_coil(uint16_t coil, bool on)
 	return rc;
 }
 
+/* One transaction with one reconnect: the SimPLC may have dropped an idle
+ * TCP connection, so a failure is retried once on a fresh socket. */
+enum txn_kind { TXN_READ_REGS, TXN_WRITE_REGS, TXN_READ_COILS };
+
+static int txn(enum txn_kind kind, uint16_t start, uint16_t *regs, uint8_t *coils,
+	       uint16_t count)
+{
+	int rc = -EIO;
+
+	power_marker_set(PM_MARK_MODBUS, true);
+	k_mutex_lock(&txn_lock, K_FOREVER);
+	for (int attempt = 0; attempt < 2; attempt++) {
+		rc = connect_locked();
+		if (rc == 0) {
+			switch (kind) {
+			case TXN_READ_REGS:
+				rc = modbus_read_holding_regs(iface, MODBUS_UNIT_ID, start, regs,
+							      count);
+				break;
+			case TXN_WRITE_REGS:
+				rc = modbus_write_holding_regs(iface, MODBUS_UNIT_ID, start, regs,
+							       count);
+				break;
+			case TXN_READ_COILS:
+				rc = modbus_read_coils(iface, MODBUS_UNIT_ID, start, coils, count);
+				break;
+			}
+		}
+		if (rc == 0) {
+			break;
+		}
+		sock_close();
+	}
+	k_mutex_unlock(&txn_lock);
+	power_marker_set(PM_MARK_MODBUS, false);
+	if (rc) {
+		LOG_WRN("Modbus %s %u x%u failed: %d",
+			kind == TXN_WRITE_REGS ? "write" : "read", start, count, rc);
+	}
+	return rc;
+}
+
+int modbus_client_read_regs(uint16_t start, uint16_t *regs, uint16_t count)
+{
+	return txn(TXN_READ_REGS, start, regs, NULL, count);
+}
+
+int modbus_client_write_regs(uint16_t start, const uint16_t *regs, uint16_t count)
+{
+	return txn(TXN_WRITE_REGS, start, (uint16_t *)regs, NULL, count);
+}
+
+int modbus_client_read_coils(uint16_t start, uint16_t *mask, uint16_t count)
+{
+	uint8_t bits[2] = {0};
+
+	if (count > 16) {
+		return -EINVAL;
+	}
+	int rc = txn(TXN_READ_COILS, start, NULL, bits, count);
+
+	if (rc == 0) {
+		*mask = (uint16_t)bits[0] | ((uint16_t)bits[1] << 8);
+	}
+	return rc;
+}
+
+void modbus_client_close(void)
+{
+	k_mutex_lock(&txn_lock, K_FOREVER);
+	sock_close();
+	k_mutex_unlock(&txn_lock);
+}
+
 int modbus_client_initialize(void)
 {
 	const struct modbus_iface_param param = {

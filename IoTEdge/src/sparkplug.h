@@ -71,6 +71,9 @@ struct sparkplug_sample {
 	float humidity_pct[SP_NUM_SENSORS];
 	uint16_t plc_status;
 	bool plc_ok;
+	/* true: timestamp_ms is already UTC (taken from the SimPLC's clock at
+	 * the measuring point), so it is not converted from uptime when sent */
+	bool utc;
 };
 
 /* Builds "spBv1.0/<group>/<type>/<node_id>". Returns 0 or -ENOMEM. */

@@ -9,6 +9,7 @@
 #include "modbus_client.h"
 #include "power_marker.h"
 #include "power_mgmt.h"
+#include "wake_cycle.h"
 
 LOG_MODULE_REGISTER(app, LOG_LEVEL_INF);
 
@@ -150,6 +151,12 @@ int main(void)
 	if (modbus_client_initialize() != 0) {
 		LOG_ERR("modbus init failed");
 	}
+#endif
+
+#if APP_DEEP_SLEEP
+	/* Deep sleep design: the SimPLC samples, we wake up, check alarms,
+	 * maybe send, and sleep again. Does not return. */
+	wake_cycle_run();
 #endif
 
 	/* Application thread: sample on a fixed interval and queue the result.

@@ -4,20 +4,20 @@ find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(zephyr_CellCom_app)
 
 target_sources(app PRIVATE
+    src/alarm.c
     src/at_parser.c
     src/bdseq_store.c
     src/client_id.c
-    src/ESP32_temperature.c
     src/main.c
     src/modem.c
     src/mqtt_client.c
-    src/mqtt_payload.c
     src/power_marker.c
     src/power_mgmt.c
     src/pm_soc_log.c
     src/modbus_client.c
     src/sparkplug.c
     src/time_sync.c
+    src/wake_cycle.c
     src/wifi_network.c
 )
 

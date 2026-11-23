@@ -32,6 +32,8 @@ static const struct modem_cfg *cfg;
 static bool ca_uploaded;
 static bool urcs_registered;
 static atomic_t mqtt_up;
+/* Uptime of the last AT+SMPUB or MQTT connect (pacing, modem_mqtt_publish) */
+static int64_t last_pub_ms;
 static atomic_t pdp_up_flag;
 
 static modem_msg_cb_t msg_cb;
@@ -529,6 +531,10 @@ int modem_mqtt_connect(void)
 		return ret;
 	}
 	atomic_set(&mqtt_up, 1);
+	/* The gap also applies to the first publish after the connect: NBIRTH
+	 * sent right after SMCONN was sometimes lost (the host then dropped the
+	 * whole session's NDATA as "without a known NBIRTH"). */
+	last_pub_ms = k_uptime_get();
 
 	/* Gen-abonnér (relevant ved clean session / reconnect) */
 	for (int i = 0; i < MODEM_MAX_SUBS; i++) {
@@ -545,8 +551,18 @@ int modem_mqtt_connect(void)
 
 /* Time for the last packets to leave after AT+SMDISC, before the caller
  * takes the data connection down */
-/* Pause between two AT+SMPUB, and before a retry of a refused one */
-#define PUB_GAP_MS        200
+/* Pause between two AT+SMPUB, and before a retry of a refused one. "OK" on
+ * AT+SMPUB only means the modem took the data; it still has to encrypt and
+ * send it. With 200 ms, back-to-back 856-byte publishes reached the broker
+ * corrupted ("malformed packet", "Wire format was corrupt") or the next one
+ * was refused. UART, encoding, payload bytes and Wi-Fi were ruled out (the
+ * same payloads sent seconds apart through the AT bridge were fine). With
+ * 1000 ms a full batch arrives intact. Cost: ~0.8 s more modem time per
+ * NDATA, about 1 mA on average at 52 messages an hour. */
+#ifndef APP_PUB_GAP_MS
+#define APP_PUB_GAP_MS    1000
+#endif
+#define PUB_GAP_MS        APP_PUB_GAP_MS
 #define PUB_RETRY_MS      500
 
 #define DISC_FLUSH_MS     1000
@@ -613,7 +629,6 @@ int modem_mqtt_publish(const char *topic, const void *payload, size_t len, int q
 	/* Back-to-back publishes (NBIRTH, then NDATA 10 ms later) were refused
 	 * with "+CME ERROR: operation not allowed" while the modem was still
 	 * sending the previous one: keep a gap, and retry once if refused. */
-	static int64_t last_pub_ms;
 	int ret = -EIO;
 
 	for (int attempt = 0; attempt < 2; attempt++) {

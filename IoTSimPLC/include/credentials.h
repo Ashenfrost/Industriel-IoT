@@ -8,6 +8,11 @@
 #define CRED_SSID_MAX 33
 #define CRED_PSK_MAX  65
 
+// The BOOT button on the ESP32 board (GPIO0, low while pressed)
+#ifndef BOOT_PIN
+#define BOOT_PIN 0
+#endif
+
 // Load the stored SSID and password. Returns false if nothing valid is stored.
 // An empty password is valid (open network).
 bool credentialsLoad(char* ssid, size_t ssidLen, char* psk, size_t pskLen);
