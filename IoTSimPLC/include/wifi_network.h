@@ -8,3 +8,7 @@ int network_initialize(const char* ssid, const char* psk);
 
 // True while Wi-Fi is connected and an IPv4 address is held.
 bool network_is_connected(void);
+
+// Call every loop(). Reconnects every few seconds while Wi-Fi is down,
+// whatever the reason (the Arduino core's auto-reconnect can give up).
+void network_maintain(void);
