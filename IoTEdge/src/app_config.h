@@ -69,13 +69,52 @@
 #error "Uplink without verified TLS: build with -DAPP_ALLOW_INSECURE (test only)"
 #endif
 
+/* ---- Alarms (alarm.c) ----
+ * Evaluated by the Edge on every SimPLC reading; the result is written to
+ * the SimPLC's coils (buzzer/lamp there). No limits in the kravspec: these
+ * were chosen by the group. Values x10, like the Modbus registers. An alarm
+ * turns off again only HYST below/above the limit, so a value right at the
+ * limit doesn't make it flicker (the DHT11 only reads whole degrees/%).
+ * The SimPLC has one temperature coil per position: it means "temperature
+ * out of range" (too hot or too cold). */
+#ifndef APP_ALARM_TEMP_HIGH_X10
+#define APP_ALARM_TEMP_HIGH_X10   400   /* alarm above 40.0 C */
+#endif
+#ifndef APP_ALARM_TEMP_LOW_X10
+#define APP_ALARM_TEMP_LOW_X10    100   /* alarm below 10.0 C */
+#endif
+#ifndef APP_ALARM_TEMP_HYST_X10
+#define APP_ALARM_TEMP_HYST_X10   10    /* 1.0 C */
+#endif
+#ifndef APP_ALARM_HUM_HIGH_X10
+#define APP_ALARM_HUM_HIGH_X10    800   /* alarm at 80.0 % or more */
+#endif
+#ifndef APP_ALARM_HUM_HYST_X10
+#define APP_ALARM_HUM_HYST_X10    30    /* 3.0 % */
+#endif
+
+/* ---- Deep sleep design (wake_cycle.c, PO feedback) ----
+ * 1 = the SimPLC samples every 10 s into its buffer; the Edge is in deep
+ * sleep and wakes every APP_ALARM_CHECK_S to check alarms. It sends (modem)
+ * when the oldest unsent sample is APP_SEND_AGE_S old, or at once when an
+ * alarm changes. 0 = the light sleep design (Edge samples every 10 s). */
+#ifndef APP_DEEP_SLEEP
+#define APP_DEEP_SLEEP            0
+#endif
+#ifndef APP_ALARM_CHECK_S
+#define APP_ALARM_CHECK_S         300
+#endif
+#ifndef APP_SEND_AGE_S
+#define APP_SEND_AGE_S            (3600 - APP_ALARM_CHECK_S)
+#endif
+
 /* ---- Power saving (see IoTEdge/tests/power/results/RESULTS.md) ---- */
 
 /* 1 = light sleep between work (CONFIG_PM). Measured: ESP idle 49 mA vs
  * light sleep 17.8 mA (modem on) / 7.7 mA (modem radio off), whole system.
  * The USB console stops after the first light sleep: use 0 to debug. */
 #ifndef APP_LIGHT_SLEEP
-#define APP_LIGHT_SLEEP         1
+#define APP_LIGHT_SLEEP         (!APP_DEEP_SLEEP) /* deep sleep: awake only briefly */
 #endif
 
 /* 1 = turn the modem's radio off (AT+CFUN=0) between sessions and back on
@@ -89,7 +128,7 @@
  * sleep while it is up). Default: on demand when samples are >= 60 s apart;
  * re-connecting every 10 s is unmeasured and phone hotspots dislike it. */
 #ifndef APP_WIFI_ON_DEMAND
-#define APP_WIFI_ON_DEMAND      (APP_SAMPLE_INTERVAL_S >= 60)
+#define APP_WIFI_ON_DEMAND      (APP_DEEP_SLEEP || APP_SAMPLE_INTERVAL_S >= 60)
 #endif
 /* Max time for one on-demand Wi-Fi connect + DHCP before the sample is
  * given up (sent as null). */

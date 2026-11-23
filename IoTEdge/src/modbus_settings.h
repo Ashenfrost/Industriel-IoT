@@ -28,3 +28,25 @@
  * The buzzer and display on the PLC follow these coils. */
 #define MODBUS_COIL_TEMP_BASE   0
 #define MODBUS_COIL_HUM_BASE    3
+#define MODBUS_NUM_COILS        (2 * MODBUS_NUM_SENSORS)
+
+/* SimPLC sample buffer and clock (IoTSimPLC include/modbusTCP.h). The SimPLC
+ * samples every 10 s by itself; the Edge sets its clock, reads the buffer in
+ * windows of MODBUS_WIN_SAMPLES and acknowledges what reached the cloud. */
+#define MODBUS_REG_UTC_HI       100  /* R/W, write 100+101 in one request */
+#define MODBUS_REG_BUF_STATUS   102  /* 102..109, see MODBUS_BUF_* below */
+#define MODBUS_BUF_STATUS_COUNT 8
+#define MODBUS_BUF_CLOCK_SET    0    /* index into the 102..109 block */
+#define MODBUS_BUF_COUNT        1
+#define MODBUS_BUF_OLDEST       2
+#define MODBUS_BUF_AGE_S        3
+#define MODBUS_BUF_LAST_ACK     4
+#define MODBUS_BUF_DROPPED      5
+#define MODBUS_BUF_WIN_START    6
+#define MODBUS_BUF_NEWEST       7
+#define MODBUS_REG_ACK          106  /* W: remove samples up to this seq */
+#define MODBUS_REG_WIN_START    108  /* W: first seq of the window */
+#define MODBUS_REG_WINDOW       200  /* window: MODBUS_WIN_SAMPLES x 10 regs */
+#define MODBUS_WIN_SAMPLES      12
+#define MODBUS_WIN_REGS_PER     10   /* seq, utc hi, utc lo, status, 3 x (temp, hum) */
+#define MODBUS_SIMPLC_SAMPLE_S  10   /* SimPLC SAMPLE_INTERVAL_MS / 1000 */

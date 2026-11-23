@@ -545,8 +545,18 @@ int modem_mqtt_connect(void)
 
 /* Time for the last packets to leave after AT+SMDISC, before the caller
  * takes the data connection down */
-/* Pause between two AT+SMPUB, and before a retry of a refused one */
-#define PUB_GAP_MS        200
+/* Pause between two AT+SMPUB, and before a retry of a refused one. "OK" on
+ * AT+SMPUB only means the modem took the data; it still has to encrypt and
+ * send it. With 200 ms, back-to-back 856-byte publishes reached the broker
+ * corrupted ("malformed packet", "Wire format was corrupt") or the next one
+ * was refused. UART, encoding, payload bytes and Wi-Fi were ruled out (the
+ * same payloads sent seconds apart through the AT bridge were fine). With
+ * 1000 ms a full batch arrives intact. Cost: ~0.8 s more modem time per
+ * NDATA, about 1 mA on average at 52 messages an hour. */
+#ifndef APP_PUB_GAP_MS
+#define APP_PUB_GAP_MS    1000
+#endif
+#define PUB_GAP_MS        APP_PUB_GAP_MS
 #define PUB_RETRY_MS      500
 
 #define DISC_FLUSH_MS     1000

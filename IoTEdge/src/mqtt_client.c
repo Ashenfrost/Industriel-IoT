@@ -86,6 +86,11 @@ static K_THREAD_STACK_DEFINE(mqtt_stack, STACK_SIZE);
 static struct k_thread mqtt_thread_data;
 
 K_MSGQ_DEFINE(sample_q, sizeof(struct sparkplug_sample), APP_SAMPLE_QUEUE_LEN, 8);
+
+/* mqtt_client_send_now() <-> MQTT thread (deep sleep design) */
+static K_SEM_DEFINE(send_req, 0, 1);
+static K_SEM_DEFINE(send_done, 0, 1);
+static volatile int send_result;
 /* Given for every queued sample; only waited on in persistent mode */
 static K_SEM_DEFINE(sample_ready, 0, K_SEM_MAX_LIMIT);
 /* Counts samples dropped because the queue was full. The oldest samples are
@@ -120,7 +125,14 @@ static void mqtt_thread_fn(void *p1, void *p2, void *p3);
  * metrics of ~18 bytes = ~125 bytes, so 7 samples (~0.9 kB) fit with margin;
  * 8 (the metric limit) would be ~1 kB, too close. */
 #define UPLINK_MAX_PAYLOAD      MODEM_MQTT_MAX_PAYLOAD
-#define NDATA_SAMPLES_PER_MSG   7
+#ifndef APP_NDATA_SAMPLES_PER_MSG
+#define APP_NDATA_SAMPLES_PER_MSG 7
+#endif
+#define NDATA_SAMPLES_PER_MSG   APP_NDATA_SAMPLES_PER_MSG
+
+/* UTC before the TLS connect: extra tries after the first, TIME_RETRY_S apart */
+#define TIME_RETRIES  5
+#define TIME_RETRY_S  3
 
 static struct modem_cfg modem_cfg;   /* must live forever (modem keeps a pointer) */
 static bool modem_ready;
@@ -197,10 +209,18 @@ static int uplink_open(void)
 		return ret;
 	}
 	/* Time before connecting: NTP needs the data connection, and TLS needs a
-	 * correct clock to check the certificate's validity dates. */
+	 * correct clock to check the certificate's validity dates. Right after
+	 * the modem attaches neither NTP nor its own clock (NITZ) may be ready:
+	 * after a cold start (every deep sleep wake) the first try failed with
+	 * -11 and the TLS connect then failed. So retry for a few seconds. */
 	time_sync_refresh_if_stale();
+	for (int i = 0; i < TIME_RETRIES && !time_sync_is_valid(); i++) {
+		k_sleep(K_SECONDS(TIME_RETRY_S));
+		time_sync_refresh_if_stale();
+	}
 	if (!time_sync_is_valid()) {
-		LOG_WRN("No valid time: timestamps will be uptime-based");
+		LOG_ERR("No valid time: TLS can't check the certificate, not connecting");
+		return -ETIMEDOUT;
 	}
 
 	ret = modem_mqtt_connect();
@@ -467,6 +487,21 @@ static void uplink_abort(void)
 /* Sparkplug session (same for both uplinks)                           */
 /* ------------------------------------------------------------------ */
 
+int mqtt_client_send_now(k_timeout_t timeout)
+{
+	k_sem_reset(&send_done);
+	k_sem_give(&send_req);
+	if (k_sem_take(&send_done, timeout) != 0) {
+		return -EAGAIN;
+	}
+	return send_result;
+}
+
+int mqtt_client_queued(void)
+{
+	return (int)k_msgq_num_used_get(&sample_q);
+}
+
 int mqtt_client_initialize(void)
 {
 	k_thread_create(&mqtt_thread_data, mqtt_stack,
@@ -532,7 +567,10 @@ static int publish_ndata_chunk(void)
 
 	/* Queued samples carry uptime; convert to UTC with the latest sync */
 	for (size_t i = 0; i < n; i++) {
-		batch[i].timestamp_ms = time_uptime_to_epoch_ms((int64_t)batch[i].timestamp_ms);
+		if (!batch[i].utc) {
+			batch[i].timestamp_ms =
+				time_uptime_to_epoch_ms((int64_t)batch[i].timestamp_ms);
+		}
 	}
 
 	/* now_ms is the payload timestamp: when this message was sent */
@@ -709,6 +747,18 @@ static void mqtt_thread_fn(void *p1, void *p2, void *p3)
 #if APP_PERSISTENT_SESSION
 	LOG_WRN("APP_PERSISTENT_SESSION: staying connected, no batching (power baseline)");
 	persistent_loop();
+#endif
+
+#if APP_DEEP_SLEEP
+	/* wake_cycle.c decides when to send; we only run the session */
+	while (1) {
+		k_sem_take(&send_req, K_FOREVER);
+		int rc = run_session();
+
+		send_result = (rc == 0 && k_msgq_num_used_get(&sample_q) == 0) ? 0 :
+			      (rc ? rc : -EIO);
+		k_sem_give(&send_done);
+	}
 #endif
 
 	/* First session right away, so a fresh boot shows up on the host */

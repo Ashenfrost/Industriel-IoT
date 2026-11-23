@@ -4,6 +4,7 @@ find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(zephyr_CellCom_app)
 
 target_sources(app PRIVATE
+    src/alarm.c
     src/at_parser.c
     src/bdseq_store.c
     src/client_id.c
@@ -18,6 +19,7 @@ target_sources(app PRIVATE
     src/modbus_client.c
     src/sparkplug.c
     src/time_sync.c
+    src/wake_cycle.c
     src/wifi_network.c
 )
 
