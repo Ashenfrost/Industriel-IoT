@@ -32,6 +32,8 @@ static const struct modem_cfg *cfg;
 static bool ca_uploaded;
 static bool urcs_registered;
 static atomic_t mqtt_up;
+/* Uptime of the last AT+SMPUB or MQTT connect (pacing, modem_mqtt_publish) */
+static int64_t last_pub_ms;
 static atomic_t pdp_up_flag;
 
 static modem_msg_cb_t msg_cb;
@@ -529,6 +531,10 @@ int modem_mqtt_connect(void)
 		return ret;
 	}
 	atomic_set(&mqtt_up, 1);
+	/* The gap also applies to the first publish after the connect: NBIRTH
+	 * sent right after SMCONN was sometimes lost (the host then dropped the
+	 * whole session's NDATA as "without a known NBIRTH"). */
+	last_pub_ms = k_uptime_get();
 
 	/* Gen-abonnér (relevant ved clean session / reconnect) */
 	for (int i = 0; i < MODEM_MAX_SUBS; i++) {
@@ -623,7 +629,6 @@ int modem_mqtt_publish(const char *topic, const void *payload, size_t len, int q
 	/* Back-to-back publishes (NBIRTH, then NDATA 10 ms later) were refused
 	 * with "+CME ERROR: operation not allowed" while the modem was still
 	 * sending the previous one: keep a gap, and retry once if refused. */
-	static int64_t last_pub_ms;
 	int ret = -EIO;
 
 	for (int attempt = 0; attempt < 2; attempt++) {
