@@ -97,9 +97,11 @@
  * 1 = the SimPLC samples every 10 s into its buffer; the Edge is in deep
  * sleep and wakes every APP_ALARM_CHECK_S to check alarms. It sends (modem)
  * when the oldest unsent sample is APP_SEND_AGE_S old, or at once when an
- * alarm changes. 0 = the light sleep design (Edge samples every 10 s). */
+ * alarm changes. 0 = the light sleep design (Edge samples every 10 s).
+ * Default 1: the final design, alarm check every 5 min and one send an hour.
+ * Measured with PPK2 (test 5/6): about 12 mA on average, see RESULTS.md. */
 #ifndef APP_DEEP_SLEEP
-#define APP_DEEP_SLEEP            0
+#define APP_DEEP_SLEEP            1
 #endif
 #ifndef APP_ALARM_CHECK_S
 #define APP_ALARM_CHECK_S         300
