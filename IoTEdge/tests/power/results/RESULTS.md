@@ -103,12 +103,84 @@ strømsparetilstand). Det er det næste der skal måles.
    bør bruge moduler uden LED'er og med mere effektive regulatorer; ellers
    bestemmer gulvet batteritiden, uanset firmwaren.
 
+## Test 5 og 6: deep sleep-udgaven (26. november 2026)
+
+Den endelige deep sleep-udgave (`APP_DEEP_SLEEP=1`, `wake_cycle.c`): IoT
+SimPLC måler hvert 10. s i sin buffer, IoT Edge sover og vågner for at tjekke
+alarmer og sender, når den ældste måling er gammel nok. For at få mange
+opvågninger med på kort tid kørte testen med alarmtjek hvert **30 s** og
+afsendelse ved **120 s** (`-DAPP_ALARM_CHECK_S=30 -DAPP_SEND_AGE_S=120`).
+
+Opstilling: hele systemet (måling A), men PPK2 i **Source Meter** ved 5 V,
+forsynet kun via USB DATA/POWER fra PC'en (ingen ekstern forsyning). 100 kS/s,
+ingen fasemarkører (slået fra i buildet). Spidserne i afsendelsen nåede ca.
+510 mA, og der var ingen genstarter, så strømgrænsen var ikke et problem.
+Rådata (`ppk-test5.csv` 1,4 GB, `ppk-test6-medoguden-modem.csv` 0,4 GB) er
+ikke i git.
+
+- **Test 5** (8,5 min): normal drift, 15 opvågninger.
+- **Test 6** (2,4 min): modemets 5V blev trukket ud midt i optagelsen, mens
+  IoT Edge var i deep sleep.
+
+### Målte faser (test 5)
+
+| Fase | Antal | Tid | Gns. strøm | Ladning |
+|---|---|---|---|---|
+| Deep sleep | – | – | **7,7 mA** | – |
+| Alarmtjek (Wi-Fi, Modbus, sov) | 10 | 4,1 s (3,3-5,7) | ca. 75 mA | **0,31 C** (0,25-0,45) |
+| Afsendelse med ca. 14 målinger | 3 | 37 s (29-46) | ca. 120 mA | **4,5 C** (3,7-5,2) |
+
+To opvågninger lige efter opstart (20 s og 8 s ved ca. 70 mA) er ikke
+regnet med: Wi-Fi fandt ikke netværket med den gemte kanal og måtte søge.
+
+En afsendelse ser sådan ud: Wi-Fi + Modbus ca. 3 s ved 90 mA, Wi-Fi ned,
+modemet registrerer sig ved ca. 100 mA (**2-19 s**, det er her variationen
+kommer fra), forbundet og sender ved ca. 165 mA, og til sidst Wi-Fi igen for
+at kvittere over for SimPLC.
+
+### Modemets andel (test 6)
+
+| | Deep sleep |
+|---|---|
+| Med modem (radio slukket med `AT+CFUN=0`) | **7,77 mA** |
+| Modemets 5V trukket ud | **1,20 mA** |
+| **Modemets andel** | **6,6 mA (ca. 85 %)** |
+
+Spidserne på ca. 110 mA under deep sleep forsvinder også uden modem, så de
+kommer fra modemet. Uden modem er et alarmtjek lidt billigere (ca. 0,26 C).
+M5Stamp CatM har kun benene G, 5V, TX, RX, 3V og RF, altså **ingen PWRKEY**.
+Modemet kan derfor kun slukkes helt ved at afbryde 5V med en transistor, som
+ESP'en styrer. Det er overvejet, men ikke bygget.
+
+### Omregnet til drift (alarmtjek hvert 5. min, afsendelse hver time)
+
+En times afsendelse har 360 målinger = 52 NDATA à 7 i stedet for ca. 2. Hver
+ekstra besked koster ca. 1,1 s ved ca. 165 mA (pausen på 1 s mellem
+publishes). Det giver ca. **13,7 C på ca. 93 s**. Det er den eneste del, der
+er **beregnet** og ikke målt.
+
+| Pr. time | Som i dag | Modem afbrudt (transistor, ikke bygget) |
+|---|---|---|
+| Deep sleep (ca. 3460 s) | 26,7 C | 4,2 C |
+| 11 alarmtjek | 3,4 C | 3,1 C |
+| 1 afsendelse | 13,7 C | 13,7 C + ca. 1 C opstart |
+| **I alt** | **43,7 C = 12,2 mA** | **21,9 C = 6,1 mA** |
+| Batteritid (2000 mAh, 80 %) | **ca. 5,5 døgn** | ca. 11 døgn |
+
+- **Deep sleep er 61 %** af ladningen, afsendelsen 31 % og alarmtjek kun 8 %.
+- Det tidligere skøn uden PPK2 (ca. 10 mA, 6,7 døgn) var for optimistisk.
+- Næste store gevinst efter modemet er **færre beskeder pr. afsendelse**
+  (flere målinger pr. NDATA).
+
 ## Næste gang
 
 - **Slå logikkanalerne til** (og tjek at D0-D3 skifter i appen før optagelse),
   så sessioner og publishes kan måles præcist med `analyze.py markers`.
 - Mål også **B (kun ESP) og C (kun modem)**, så fordelingen kendes direkte
-  i stedet for ud fra forskelle mellem tilstande.
+  i stedet for ud fra forskelle mellem tilstande. Test 6 gav fordelingen i
+  deep sleep, men ikke under afsendelse.
+- Mål en **rigtig times afsendelse** (360 målinger), så den ikke skal regnes
+  ud fra korte afsendelser.
 - 10 kS/s er nok til 15 min; 100 kS/s gav filer på ~2,4 GB.
 
 ## Sådan er tallene lavet
@@ -120,6 +192,10 @@ python ..\segment.py sessions test1_b100ms.csv --threshold 90 --min-s 1 --gap-s 
 python ..\segment.py sessions test3_b100ms.csv --threshold 90 --min-s 1 --gap-s 1 --json seg_test3.json
 python ..\segment.py phases   test4_b100ms.csv --json seg_test4.json
 python derive.py                                                          # tabellerne ovenfor
+python ..\bins.py ppk-test5.csv --bin 0.1 --out test5_b100ms.csv          # test 5 og 6
+python ..\segment.py sessions test5_b100ms.csv                             # opvågninger, deep sleep = median
+python ..\bins.py ppk-test6-medoguden-modem.csv --bin 0.1 --out test6_b100ms.csv
+python ..\segment.py sessions test6_b100ms.csv
 ```
 `markers_test*.md` / `phases_test4_markers.md` er `analyze.py`'s rapporter
 (kun hele-optagelsens tal, fordi markørerne mangler).
